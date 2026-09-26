@@ -18,20 +18,27 @@ DEFAULT_MODEL = "gemini-3.8-flash"
 # Models Google has retired; saved configs using them are moved to DEFAULT_MODEL.
 RETIRED_MODELS = frozenset(("gemini-2.5-flash",))
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-# Rough characters per token, used to keep Ollama snapshots inside the context window.
+# llama.cpp's llama-server default address.
+DEFAULT_SERVER_URL = "http://localhost:8080/v1"
+# Rough characters per token, used to keep local snapshots inside the context window.
 CHARS_PER_TOKEN = 3.5
-# Share of the Ollama context the snapshot may use; the rest is for the prompt, thinking and the answer.
-OLLAMA_INPUT_SHARE = 0.55
-OLLAMA_INPUT_SHARE_THINKING = 0.35
+# Share of a local context the snapshot may use; the rest is for the prompt, thinking and the answer.
+LOCAL_INPUT_SHARE = 0.55
+LOCAL_INPUT_SHARE_THINKING = 0.35
 
 confspec = {
-	"provider": "option('gemini', 'ollama', default='gemini')",
+	"provider": "option('gemini', 'ollama', 'server', default='gemini')",
 	"apiKey": "string(default='')",
 	"model": "string(default='%s')" % DEFAULT_MODEL,
 	"ollamaUrl": "string(default='%s')" % DEFAULT_OLLAMA_URL,
 	"ollamaModel": "string(default='')",
 	"ollamaContextSize": "integer(default=32768, min=2048, max=1048576)",
 	"ollamaThinking": "option('off', 'on', 'default', default='off')",
+	"serverUrl": "string(default='%s')" % DEFAULT_SERVER_URL,
+	"serverModel": "string(default='')",
+	"serverApiKey": "string(default='')",
+	"serverContextSize": "integer(default=32768, min=2048, max=1048576)",
+	"serverThinking": "option('off', 'on', 'default', default='off')",
 	"clickMethod": "option('action', 'mouse', default='action')",
 	"maxChars": "integer(default=150000, min=5000, max=2000000)",
 	"timeout": "integer(default=300, min=10, max=1800)",
@@ -42,17 +49,19 @@ PROVIDERS = (
 	("gemini", _("Google Gemini (cloud)")),
 	# Translators: an LLM provider in the settings panel.
 	("ollama", _("Ollama (local or self-hosted)")),
+	# Translators: an LLM provider in the settings panel.
+	("server", _("OpenAI-compatible server (llama.cpp, LM Studio, Foundry Local)")),
 )
 
 THINKING_MODES = (
-	# Translators: an Ollama thinking mode in the settings panel.
+	# Translators: a thinking mode for local models in the settings panel.
 	("off", _("Off (much faster)")),
-	# Translators: an Ollama thinking mode in the settings panel.
+	# Translators: a thinking mode for local models in the settings panel.
 	("on", _("On (much slower, may handle complex pages better; thinking models only)")),
-	# Translators: an Ollama thinking mode in the settings panel.
+	# Translators: a thinking mode for local models in the settings panel.
 	("default", _("Model's default")),
 )
-# Value of Ollama's "think" parameter for each mode; None leaves it unset.
+# Value of the providers' think parameter for each mode; None leaves it unset.
 THINK_PARAM = {"off": False, "on": True, "default": None}
 
 CLICK_METHODS = (
@@ -86,6 +95,15 @@ def makeProvider():
 			THINK_PARAM[c["ollamaThinking"]],
 		)
 		return provider, None
+	if c["provider"] == "server":
+		provider = llm.OpenAICompatibleProvider(
+			c["serverUrl"].strip() or DEFAULT_SERVER_URL,
+			c["serverModel"].strip(),
+			c["serverApiKey"].strip(),
+			c["timeout"],
+			THINK_PARAM[c["serverThinking"]],
+		)
+		return provider, None
 	apiKey = getApiKey()
 	if not apiKey:
 		# Translators: reported when no API key is configured.
@@ -98,15 +116,18 @@ def providerId():
 	c = conf()
 	if c["provider"] == "ollama":
 		return "ollama:%s:%s:%d:%s" % (c["ollamaUrl"], c["ollamaModel"], c["ollamaContextSize"], c["ollamaThinking"])
+	if c["provider"] == "server":
+		return "server:%s:%s:%s" % (c["serverUrl"], c["serverModel"], c["serverThinking"])
 	return "gemini:%s" % c["model"]
 
 
 def effectiveMaxChars():
-	"""The snapshot size limit, capped so Ollama never silently truncates the prompt."""
+	"""The snapshot size limit, capped so local models never overflow their context."""
 	c = conf()
-	if c["provider"] == "ollama":
-		share = OLLAMA_INPUT_SHARE if c["ollamaThinking"] == "off" else OLLAMA_INPUT_SHARE_THINKING
-		return min(c["maxChars"], int(c["ollamaContextSize"] * CHARS_PER_TOKEN * share))
+	if c["provider"] in ("ollama", "server"):
+		context, thinking = c[c["provider"] + "ContextSize"], c[c["provider"] + "Thinking"]
+		share = LOCAL_INPUT_SHARE if thinking == "off" else LOCAL_INPUT_SHARE_THINKING
+		return min(c["maxChars"], int(context * CHARS_PER_TOKEN * share))
 	return c["maxChars"]
 
 
@@ -162,22 +183,82 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		)
 		self.ollamaModelCombo.SetValue(c["ollamaModel"])
 		# Translators: button that lists the models installed on the Ollama server.
-		self.refreshButton = ollama.addItem(wx.Button(self.ollamaBox, label=_("&Refresh installed models")))
-		self.refreshButton.Bind(wx.EVT_BUTTON, self._onRefresh)
-		self.thinkingChoice = ollama.addLabeledControl(
+		self.ollamaRefreshButton = ollama.addItem(wx.Button(self.ollamaBox, label=_("&Refresh installed models")))
+		self.ollamaRefreshButton.Bind(
+			wx.EVT_BUTTON,
+			lambda evt: self._refreshModels(
+				self.ollamaRefreshButton,
+				self.ollamaModelCombo,
+				lambda: llm.listOllamaModels(self.ollamaUrlEdit.GetValue().strip() or DEFAULT_OLLAMA_URL),
+			),
+		)
+		self.ollamaThinkingChoice = ollama.addLabeledControl(
 			# Translators: label in the settings panel.
 			_("T&hinking:"),
 			wx.Choice,
 			choices=[label for _key, label in THINKING_MODES],
 		)
-		self.thinkingChoice.SetSelection(_choiceIndex(THINKING_MODES, c["ollamaThinking"]))
-		self.contextSpin = ollama.addLabeledControl(
+		self.ollamaThinkingChoice.SetSelection(_choiceIndex(THINKING_MODES, c["ollamaThinking"]))
+		self.ollamaContextSpin = ollama.addLabeledControl(
 			# Translators: label in the settings panel.
 			_("Ollama context si&ze (tokens; larger pages need more memory):"),
 			nvdaControls.SelectOnFocusSpinCtrl,
 			min=2048,
 			max=1048576,
 			initial=c["ollamaContextSize"],
+		)
+
+		# Translators: title of the OpenAI-compatible server settings group.
+		serverSizer = wx.StaticBoxSizer(wx.VERTICAL, self, label=_("OpenAI-compatible server"))
+		self.serverBox = serverSizer.GetStaticBox()
+		server = helper.addItem(guiHelper.BoxSizerHelper(self.serverBox, sizer=serverSizer))
+		self.serverUrlEdit = server.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Server a&ddress (llama.cpp: http://localhost:8080/v1, LM Studio: http://localhost:1234/v1):"),
+			wx.TextCtrl,
+		)
+		self.serverUrlEdit.SetValue(c["serverUrl"])
+		self.serverModelCombo = server.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Server mod&el (may stay empty for llama.cpp):"),
+			wx.ComboBox,
+			choices=[c["serverModel"]] if c["serverModel"] else [],
+		)
+		self.serverModelCombo.SetValue(c["serverModel"])
+		# Translators: button that lists the models an OpenAI-compatible server offers.
+		self.serverRefreshButton = server.addItem(wx.Button(self.serverBox, label=_("Re&fresh server models")))
+		self.serverRefreshButton.Bind(
+			wx.EVT_BUTTON,
+			lambda evt: self._refreshModels(
+				self.serverRefreshButton,
+				self.serverModelCombo,
+				lambda: llm.listOpenAIModels(
+					self.serverUrlEdit.GetValue().strip() or DEFAULT_SERVER_URL,
+					self.serverApiKeyEdit.GetValue().strip(),
+				),
+			),
+		)
+		self.serverApiKeyEdit = server.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Server API ke&y (usually not needed for local servers):"),
+			wx.TextCtrl,
+			style=wx.TE_PASSWORD,
+		)
+		self.serverApiKeyEdit.SetValue(c["serverApiKey"])
+		self.serverThinkingChoice = server.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Server thinkin&g:"),
+			wx.Choice,
+			choices=[label for _key, label in THINKING_MODES],
+		)
+		self.serverThinkingChoice.SetSelection(_choiceIndex(THINKING_MODES, c["serverThinking"]))
+		self.serverContextSpin = server.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Server conte&xt size (tokens; set it to the context the server was started with):"),
+			nvdaControls.SelectOnFocusSpinCtrl,
+			min=2048,
+			max=1048576,
+			initial=c["serverContextSize"],
 		)
 
 		self.clickMethodChoice = helper.addLabeledControl(
@@ -210,38 +291,39 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		return PROVIDERS[self.providerChoice.GetSelection()][0]
 
 	def _updateEnabled(self):
-		isOllama = self._selectedProvider() == "ollama"
-		self.geminiBox.Enable(not isOllama)
-		self.ollamaBox.Enable(isOllama)
+		selected = self._selectedProvider()
+		self.geminiBox.Enable(selected == "gemini")
+		self.ollamaBox.Enable(selected == "ollama")
+		self.serverBox.Enable(selected == "server")
 
-	def _onRefresh(self, evt):
-		url = self.ollamaUrlEdit.GetValue().strip() or DEFAULT_OLLAMA_URL
-		self.refreshButton.Disable()
+	def _refreshModels(self, button, combo, fetch):
+		"""Fills combo with the model names returned by fetch(), which runs in the background."""
+		button.Disable()
 
 		def worker():
 			try:
-				models, error = llm.listOllamaModels(url), None
+				models, error = fetch(), None
 			except Exception as e:
 				models, error = [], e
-			wx.CallAfter(self._onModels, models, error)
+			wx.CallAfter(self._onModels, button, combo, models, error)
 
 		threading.Thread(target=worker, daemon=True).start()
 
-	def _onModels(self, models, error):
+	def _onModels(self, button, combo, models, error):
 		if not self:  # The settings dialog was closed meanwhile.
 			return
-		self.refreshButton.Enable()
+		button.Enable()
 		if error:
 			ui.message(str(error))
 			return
 		if not models:
-			# Translators: reported when the Ollama server has no models installed.
-			ui.message(_("No models installed. Install one with: ollama pull followed by the model name"))
+			# Translators: reported when a server offers no models.
+			ui.message(_("The server offers no models"))
 			return
-		current = self.ollamaModelCombo.GetValue().strip()
-		self.ollamaModelCombo.SetItems(models)
-		self.ollamaModelCombo.SetValue(current if current in models else models[0])
-		# Translators: reported after listing Ollama models; {count} is how many were found.
+		current = combo.GetValue().strip()
+		combo.SetItems(models)
+		combo.SetValue(current if current in models else models[0])
+		# Translators: reported after listing models; {count} is how many were found.
 		ui.message(_("{count} models found").format(count=len(models)))
 
 	def onSave(self):
@@ -251,8 +333,13 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		c["model"] = self.modelEdit.GetValue().strip() or DEFAULT_MODEL
 		c["ollamaUrl"] = self.ollamaUrlEdit.GetValue().strip() or DEFAULT_OLLAMA_URL
 		c["ollamaModel"] = self.ollamaModelCombo.GetValue().strip()
-		c["ollamaContextSize"] = self.contextSpin.GetValue()
-		c["ollamaThinking"] = THINKING_MODES[self.thinkingChoice.GetSelection()][0]
+		c["ollamaContextSize"] = self.ollamaContextSpin.GetValue()
+		c["ollamaThinking"] = THINKING_MODES[self.ollamaThinkingChoice.GetSelection()][0]
+		c["serverUrl"] = self.serverUrlEdit.GetValue().strip() or DEFAULT_SERVER_URL
+		c["serverModel"] = self.serverModelCombo.GetValue().strip()
+		c["serverApiKey"] = self.serverApiKeyEdit.GetValue().strip()
+		c["serverContextSize"] = self.serverContextSpin.GetValue()
+		c["serverThinking"] = THINKING_MODES[self.serverThinkingChoice.GetSelection()][0]
 		c["clickMethod"] = CLICK_METHODS[self.clickMethodChoice.GetSelection()][0]
 		c["maxChars"] = self.maxCharsSpin.GetValue()
 		c["timeout"] = self.timeoutSpin.GetValue()

@@ -154,6 +154,62 @@ class OllamaProvider:
 		return _parseJson((data.get("message") or {}).get("content", ""))
 
 
+def normalizeOpenAIUrl(baseUrl):
+	"""Accepts "http://host:port" or "http://host:port/v1" and returns the /v1 base."""
+	baseUrl = baseUrl.strip().rstrip("/")
+	return baseUrl if baseUrl.endswith("/v1") else baseUrl + "/v1"
+
+
+class OpenAICompatibleProvider:
+	"""Any server with an OpenAI-style /v1/chat/completions endpoint:
+	llama.cpp's llama-server, LM Studio, Foundry Local, vLLM and others.
+	"""
+
+	SERVICE = "The local AI server"
+
+	def __init__(self, baseUrl, model="", apiKey="", timeout=300, think=None):
+		"""think: True or False to force thinking on or off, None for the model's default."""
+		self.baseUrl = normalizeOpenAIUrl(baseUrl)
+		self.model = model
+		self.apiKey = apiKey
+		self.timeout = timeout
+		self.think = think
+
+	def generateJson(self, system, user, schema):
+		body = {
+			# llama-server serves whatever model it loaded and ignores this; others require it.
+			"model": self.model or "default",
+			"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+			"temperature": 0.2,
+			"stream": False,
+			"response_format": {
+				"type": "json_schema",
+				"json_schema": {"name": "response", "schema": toJsonSchema(schema)},
+			},
+		}
+		if self.think is not None:
+			# Understood by llama-server and by chat templates of thinking models such as Qwen.
+			body["chat_template_kwargs"] = {"enable_thinking": self.think}
+		headers = {"Authorization": "Bearer %s" % self.apiKey} if self.apiKey else {}
+		data = _request(self.SERVICE, self.baseUrl + "/chat/completions", body, headers, self.timeout)
+		choices = data.get("choices") or []
+		if not choices:
+			raise LLMError("%s returned no answer" % self.SERVICE)
+		if choices[0].get("finish_reason") == "length":
+			raise LLMError(
+				"The answer did not fit in the server's context. Start the server with a larger context "
+				"or try the goal-based rebuild."
+			)
+		return _parseJson((choices[0].get("message") or {}).get("content") or "")
+
+
+def listOpenAIModels(baseUrl, apiKey="", timeout=5):
+	"""Returns the model ids an OpenAI-compatible server offers."""
+	headers = {"Authorization": "Bearer %s" % apiKey} if apiKey else {}
+	data = _request(OpenAICompatibleProvider.SERVICE, normalizeOpenAIUrl(baseUrl) + "/models", headers=headers, timeout=timeout)
+	return sorted(m["id"] for m in data.get("data") or [] if m.get("id"))
+
+
 def listOllamaModels(baseUrl, timeout=5):
 	"""Returns the names of the models installed on an Ollama server."""
 	data = _request("Ollama", baseUrl.rstrip("/") + "/api/tags", timeout=timeout)

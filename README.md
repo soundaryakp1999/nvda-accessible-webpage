@@ -37,6 +37,30 @@ Open NVDA settings, go to the "Accessible Webpage" category, and choose an AI pr
 2. Enter the key in the settings. You can also set the `GEMINI_API_KEY` environment variable instead.
 3. You can change the model there too (default `gemini-3.8-flash`).
 
+**OpenAI-compatible server (local, fastest on Snapdragon X / Windows on Arm)**
+
+This works with llama.cpp's `llama-server`, LM Studio, Foundry Local and other servers that offer an
+OpenAI-style `/v1/chat/completions` endpoint.
+
+1. Start the server. For llama.cpp, download the `win-cpu-arm64` (or your platform's) release and run
+   `llama-server -m model.gguf -c 32768 --port 8080`.
+2. Enter the server address (llama.cpp: `http://localhost:8080/v1`, LM Studio: `http://localhost:1234/v1`).
+   The model can stay empty for llama.cpp. "Refresh server models" lists what the server offers.
+3. Set the context size to the value the server was started with (`-c`). The add-on shortens the page to fit.
+4. Thinking works as for Ollama. It's sent as `chat_template_kwargs.enable_thinking`, which llama.cpp
+   supports.
+
+Measured on a Snapdragon X Elite (Surface Laptop 7, 32 GB) with a 10,000-token shop page:
+
+- Qwen3-4B on the Adreno GPU (llama.cpp OpenCL build, `-ngl 99 -fa on`): 17 minutes.
+- Ollama with qwen3.5:35b on the CPU: 23 minutes.
+- With a long page in context, the Adreno GPU was 2 to 4 times faster than the CPU. Models over about
+  8B don't fit in the GPU's memory limit.
+- llama.cpp's CPU build is much faster than Ollama for older architectures (Llama 3.2: 4 times faster
+  reading) but not for Qwen 3.5.
+- Most of the time goes into writing the HTML (about 8,000 tokens for this page), so page size matters
+  more than hardware settings.
+
 **Ollama (local, nothing leaves your computer)**
 
 1. Install Ollama and download a model, for example `ollama pull qwen3.5:35b`.

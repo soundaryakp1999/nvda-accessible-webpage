@@ -75,6 +75,10 @@ HTML RULES
     - Never create an empty container for data-toggle. If you have nothing to put in it, the
       content is not in the snapshot: use data-expand with the control's ref instead.
     - Use data-ref only for actions that submit, navigate, or change data.
+12. Keep the markup compact, because every character costs time: no indentation or blank lines,
+    no class or style attributes, no href on links (write <a data-ref="eN">), and no type on buttons
+    unless it is type="submit". Buttons default to type="button". Don't add aria-label when the
+    visible text already says the same thing.
 """
 
 SYSTEM_PROMPT = """You are an expert web accessibility engineer helping a blind screen reader user.
