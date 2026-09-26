@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="{{LANG}}">
+<head>
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<style>
+body { font-family: "Segoe UI", Arial, sans-serif; font-size: 16px; line-height: 1.5; margin: 1em 2em; color: #111; background: #fff; }
+h1 { font-size: 1.6em; margin: 0 0 .25em; }
+#awp-summary { margin: 0 0 1em; padding: .5em .75em; background: #eef4ff; border-left: 4px solid #0050b3; }
+#awp-note { font-size: .85em; color: #444; margin-top: -.5em; }
+label { font-weight: 600; }
+input, select, textarea, button { font: inherit; margin: .2em 0 .6em; }
+input[type=text], input[type=email], input[type=tel], input[type=url], input[type=number],
+input[type=search], input[type=password], select, textarea { display: block; width: 100%; max-width: 32em; padding: .3em; border: 1px solid #555; }
+button { padding: .35em 1em; border: 2px solid #0050b3; background: #fff; color: #0050b3; cursor: pointer; }
+button[type=submit] { background: #0050b3; color: #fff; }
+fieldset { border: 1px solid #999; margin: 1em 0; padding: .5em 1em; }
+a { color: #0050b3; }
+*:focus { outline: 3px solid #d35400; outline-offset: 2px; }
+table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .25em .5em; }
+[hidden] { display: none !important; }
+[aria-busy=true] { opacity: .6; }
+#awp-toolbar { border-top: 2px solid #ccc; margin-top: 2em; padding-top: 1em; }
+</style>
+</head>
+<body>
+<h1>{{TITLE}}</h1>
+<p id="awp-summary">{{SUMMARY}}</p>
+<p id="awp-note">{{NOTE}}</p>
+<div id="awp-content">
+{{CONTENT}}
+</div>
+<div id="awp-toolbar" role="region" aria-label="{{TOOLBAR}}">
+<button type="button" id="awp-apply">{{APPLY}}</button>
+<button type="button" id="awp-close">{{CLOSE}}</button>
+</div>
+<script>
+(function () {
+	var done = false;
+	var content = document.getElementById('awp-content');
+
+	function lower(s) { return (s || '').toLowerCase(); }
+
+	function inputType(el) { return lower(el.getAttribute('type')) || 'text'; }
+
+	function isActivator(el) {
+		var tag = lower(el.tagName);
+		if (tag === 'button' || tag === 'a') { return true; }
+		if (tag === 'input') {
+			var t = inputType(el);
+			return t === 'button' || t === 'submit' || t === 'reset';
+		}
+		return false;
+	}
+
+	function closest(el, test) {
+		while (el && el.nodeType === 1 && el !== content) {
+			if (test(el)) { return el; }
+			el = el.parentNode;
+		}
+		return null;
+	}
+
+	function collect() {
+		var fields = [];
+		var els = content.querySelectorAll('input[data-ref], textarea[data-ref], select[data-ref]');
+		for (var i = 0; i < els.length; i++) {
+			var el = els[i], ref = el.getAttribute('data-ref'), tag = lower(el.tagName);
+			if (el.disabled || isActivator(el)) { continue; }
+			if (tag === 'select') {
+				if (el.selectedIndex === el.awpInitial || el.selectedIndex < 0) { continue; }
+				var opt = el.options[el.selectedIndex];
+				fields.push({ ref: ref, kind: 'select', optionRef: opt.getAttribute('data-ref') || '', text: opt.text });
+			} else if (tag === 'textarea') {
+				if (el.value !== el.defaultValue) { fields.push({ ref: ref, kind: 'text', value: el.value }); }
+			} else {
+				var t = inputType(el);
+				if (t === 'checkbox' || t === 'radio') {
+					if (el.checked === el.defaultChecked || (t === 'radio' && !el.checked)) { continue; }
+					fields.push({ ref: ref, kind: 'check', checked: el.checked });
+				} else if (el.value !== el.defaultValue) {
+					fields.push({ ref: ref, kind: 'text', value: el.value });
+				}
+			}
+		}
+		return fields;
+	}
+
+	function finish(result) {
+		if (done) { return; }
+		done = true;
+		window.returnValue = JSON.stringify(result);
+		window.close();
+	}
+
+	function initSelects(root) {
+		var selects = root.getElementsByTagName('select');
+		for (var i = 0; i < selects.length; i++) { selects[i].awpInitial = selects[i].selectedIndex; }
+	}
+
+	// Local toggles: show/hide content that is already in this page.
+	function setOpen(btn, open) {
+		var panel = document.getElementById(btn.getAttribute('data-toggle'));
+		if (!panel) { return; }
+		if (open) { panel.removeAttribute('hidden'); } else { panel.setAttribute('hidden', 'hidden'); }
+		btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+	}
+
+	function toggle(btn) {
+		var panel = document.getElementById(btn.getAttribute('data-toggle'));
+		if (!panel) { return; }
+		var open = panel.hasAttribute('hidden');
+		var group = btn.getAttribute('data-toggle-group');
+		if (group && open) {
+			var others = content.querySelectorAll('[data-toggle-group]');
+			for (var i = 0; i < others.length; i++) {
+				if (others[i] !== btn && others[i].getAttribute('data-toggle-group') === group) { setOpen(others[i], false); }
+			}
+		}
+		setOpen(btn, open);
+	}
+
+	function initToggles(root) {
+		var btns = root.querySelectorAll('[data-toggle]');
+		for (var i = 0; i < btns.length; i++) {
+			var panel = document.getElementById(btns[i].getAttribute('data-toggle'));
+			if (panel) {
+				btns[i].setAttribute('aria-controls', panel.id);
+				btns[i].setAttribute('aria-expanded', panel.hasAttribute('hidden') ? 'false' : 'true');
+			}
+		}
+	}
+
+	// Live expand: NVDA operates the control on the original page and returns the revealed content.
+	var expanding = false, liveCount = 0;
+	function expand(btn) {
+		if (expanding) { return; }
+		expanding = true;
+		btn.setAttribute('aria-busy', 'true');
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', 'expand', true);
+		xhr.setRequestHeader('Content-Type', 'application/json');
+		xhr.onreadystatechange = function () {
+			if (xhr.readyState !== 4) { return; }
+			expanding = false;
+			btn.removeAttribute('aria-busy');
+			var data = null;
+			try { data = JSON.parse(xhr.responseText); } catch (err) { return; }
+			if (!data || !data.html) { return; }
+			var panel = document.createElement('div');
+			panel.id = 'awp-live-' + (++liveCount);
+			panel.innerHTML = data.html;
+			var anchor = btn;
+			if (/^H[2-6]$/.test(btn.parentNode.tagName)) { anchor = btn.parentNode; }
+			anchor.parentNode.insertBefore(panel, anchor.nextSibling);
+			// From now on the button just shows and hides what was fetched.
+			btn.removeAttribute('data-expand');
+			btn.setAttribute('data-toggle', panel.id);
+			initSelects(panel);
+			initToggles(panel);
+			initToggles(anchor.parentNode);
+		};
+		xhr.send(JSON.stringify({ ref: btn.getAttribute('data-expand') }));
+	}
+
+	initSelects(content);
+	initToggles(content);
+
+	document.addEventListener('click', function (e) {
+		var target = e.target || e.srcElement;
+		if (target && target.id === 'awp-apply') { finish({ action: 'apply', fields: collect() }); return; }
+		if (target && target.id === 'awp-close') { window.close(); return; }
+		var local = closest(target, function (n) { return n.getAttribute('data-expand') || n.getAttribute('data-toggle'); });
+		if (local) {
+			e.preventDefault();
+			if (local.getAttribute('data-expand')) { expand(local); } else { toggle(local); }
+			return;
+		}
+		var el = closest(target, function (n) { return n.getAttribute('data-ref') && isActivator(n); });
+		if (el) {
+			e.preventDefault();
+			finish({ action: 'click', ref: el.getAttribute('data-ref'), fields: collect() });
+			return;
+		}
+		if (closest(target, function (n) { return lower(n.tagName) === 'a'; })) { e.preventDefault(); }
+	}, false);
+
+	document.addEventListener('submit', function (e) {
+		e.preventDefault();
+		var form = e.target || e.srcElement;
+		var btn = form.querySelector('[type=submit][data-ref]');
+		if (btn) {
+			finish({ action: 'click', ref: btn.getAttribute('data-ref'), fields: collect() });
+		} else {
+			finish({ action: 'apply', fields: collect() });
+		}
+	}, true);
+
+	document.addEventListener('keydown', function (e) {
+		if (e.keyCode === 27) { window.close(); }
+	}, false);
+})();
+</script>
+</body>
+</html>
