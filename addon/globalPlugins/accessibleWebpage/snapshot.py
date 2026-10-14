@@ -508,6 +508,30 @@ def splitPart(lines, maxChars):
 _REF = re.compile(r' ref="(e\d+)"')
 
 
+def refsIn(lines):
+	"""The refs in snapshot lines, in page order."""
+	refs = []
+	for line in lines:
+		for ref in _REF.findall(line):
+			if ref not in refs:
+				refs.append(ref)
+	return refs
+
+
+def leftOut(snap, lines, used):
+	"""Operable elements in lines that the model's output doesn't use, as (ref, label, isLink).
+	Elements without a name or text are skipped: there would be nothing to call them."""
+	out = []
+	for ref in refsIn(lines):
+		info = snap.refs.get(ref)
+		if ref in used or info is None:
+			continue
+		label = info.name or (info.key[2] if info.key else "")
+		if label:
+			out.append((ref, label, getattr(info.role, "name", "") == "LINK"))
+	return out
+
+
 def lastMainRef(lines):
 	"""The ref of the last operable element in the main landmark, or on the page if it has none.
 	Scrolling it into view makes infinite feeds load more."""

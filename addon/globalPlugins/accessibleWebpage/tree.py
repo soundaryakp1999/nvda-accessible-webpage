@@ -70,6 +70,18 @@ def normalizeNodes(raw, validRefs):
 	return nodes
 
 
+def leftOutNodes(snap, lines, nodes):
+	"""A group of the controls in lines that the tree's nodes left out, so nothing on the page is lost."""
+	items = snapshot.leftOut(snap, lines, {n["ref"] for n in nodes if n["ref"]})
+	if not items:
+		return []
+	# Translators: page tree group of controls the model left out; {count} is how many.
+	out = [{"level": 1, "ref": "", "text": _("Other controls on the page ({count})").format(count=len(items))}]
+	for ref, label, isLink in items:
+		out.append({"level": 2, "ref": ref, "text": "%s, %s" % (label, KIND_LABELS["link" if isLink else "button"])})
+	return out
+
+
 class MoreLoader:
 	"""Loads the rest of a long page into the tree, one part at a time, in the background."""
 
@@ -100,6 +112,7 @@ class MoreLoader:
 					prompt.TREE_MORE_SCHEMA,
 				)
 			nodes = normalizeNodes(result.get("nodes"), self.snapshot.refs)
+			nodes += leftOutNodes(self.snapshot, part, nodes)
 			self.pending = rest
 		except Exception as e:
 			log.debugWarning("Loading more of the tree failed", exc_info=True)

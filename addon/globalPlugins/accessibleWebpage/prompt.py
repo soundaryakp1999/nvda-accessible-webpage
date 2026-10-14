@@ -64,7 +64,8 @@ The result must meet WCAG 2.2 AA.
 8. Order: the page's primary task first (e.g. the login, checkout or search form), then the main
    content, then secondary navigation and footer. Group related fields with <fieldset>/<legend>.
 9. Keep all meaningful content and every operable element that matters. Remove clutter: ads,
-   duplicated links, decorative text, tracking noise. Keep cookie or consent buttons. Collapse
+   duplicated links, decorative text, tracking noise. Keep cookie or consent buttons, and the site's
+   logo or home link (label it by its destination, e.g. "eSchool home"). Collapse
    long navigation menus into a <nav> with a heading.
 10. Do not invent content that is not supported by the snapshot. Write labels in the page's language.
 11. Things that only show or hide content (accordions, disclosure triangles, "show more",
@@ -164,7 +165,8 @@ reader to that element on the original page, where the user operates it.
 6. Repeated items such as feed posts, search results, products or comments: one group per item,
    labelled with its author or title and a few words, containing its text summary and its actions.
 7. Skip clutter: duplicated links, decorative text, ads and tracking elements. Keep everything the
-   user can operate that matters, including cookie or consent buttons.
+   user can operate that matters, including cookie or consent buttons and the site's logo or home
+   link (label it by its destination, e.g. "eSchool home").
 """
 
 TREE_SYSTEM_PROMPT = _COMMON + _TREE_RULES + """

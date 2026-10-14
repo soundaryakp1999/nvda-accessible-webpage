@@ -259,6 +259,35 @@ def _attrs(clean):
 	return "".join(' %s' % k if v is None else ' %s="%s"' % (k, escape(v, quote=True)) for k, v in clean)
 
 
+_USED_REF = re.compile(r'data-(?:ref|expand)="(e\d+)"')
+
+
+def usedRefs(html):
+	"""The refs that sanitized HTML lets the user operate."""
+	return set(_USED_REF.findall(html))
+
+
+_missingLists = itertools.count(1)
+
+
+def leftOutSection(items, heading, buttonLabel):
+	"""HTML for controls the model left out, collapsed behind a show/hide button, so nothing on the
+	page is lost. items: (ref, label, isLink) tuples. The labels are escaped here."""
+	if not items:
+		return ""
+	listId = "awp-left-out-%d" % next(_missingLists)
+	entries = "".join(
+		'<li><a data-ref="%s" href="#">%s</a></li>' % (ref, escape(label, quote=False)) if isLink
+		else '<li><button type="button" data-ref="%s">%s</button></li>' % (ref, escape(label, quote=False))
+		for ref, label, isLink in items
+	)
+	return (
+		'<div role="region" aria-label="%s"><h2>%s</h2>'
+		'<button type="button" data-toggle="%s" aria-controls="%s" aria-expanded="false">%s</button>'
+		'<ul id="%s" hidden>%s</ul></div>'
+	) % (escape(heading), escape(heading, quote=False), listId, listId, escape(buttonLabel, quote=False), listId, entries)
+
+
 def sanitize(html, validRefs, texts=None):
 	"""texts: the snapshot's long texts by id, for data-text."""
 	collector = _IdCollector()

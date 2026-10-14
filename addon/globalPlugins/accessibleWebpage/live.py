@@ -77,6 +77,18 @@ class _Beeper:
 		self._stop.set()
 
 
+def leftOutHtml(snap, lines, html):
+	"""A collapsed list of the controls in lines that the rebuilt html left out."""
+	items = snapshot.leftOut(snap, lines, sanitizer.usedRefs(html))
+	return sanitizer.leftOutSection(
+		items,
+		# Translators: heading of the list of page controls the rebuilt page left out.
+		_("Other controls on the page"),
+		# Translators: button that shows the controls the rebuilt page left out; {count} is how many.
+		_("Show {count} controls the rebuild left out").format(count=len(items)),
+	)
+
+
 def addedLines(before, after, ref=None):
 	"""Snapshot lines that are new or changed in after, excluding the activated control itself."""
 	a, b = before.split("\n"), after.split("\n")
@@ -177,6 +189,8 @@ class LiveSession:
 			if self.closed:
 				return {"html": ""}
 			html = sanitizer.sanitize(result.get("html", ""), self.snapshot.refs.keys(), self.snapshot.texts)
+			if html.strip():
+				html += leftOutHtml(self.snapshot, part, html)
 			if not html.strip():
 				# Translators: spoken when the next part of a page had nothing worth showing.
 				speak(_("Nothing new in this part. Press Load more again to continue."))

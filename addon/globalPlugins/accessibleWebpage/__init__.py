@@ -202,6 +202,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def _showTree(self, snap, result, rest):
 		"""rest: snapshot lines of a long page that the dialog's Load more button adds to the tree."""
 		nodes = tree.normalizeNodes(result.get("nodes"), snap.refs)
+		lines = snap.text.split("\n")
+		nodes += tree.leftOutNodes(snap, lines[:len(lines) - len(rest)], nodes)
 		title = result.get("title") or snap.title or _("Accessible Webpage")
 		provider, _error = settings.makeProvider()
 		loader = None
@@ -215,6 +217,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def _show(self, snap, result, rest):
 		"""rest: snapshot lines of a long page that are loaded with the viewer's Load more button."""
 		content = sanitizer.sanitize(result.get("html", ""), snap.refs.keys(), snap.texts)
+		lines = snap.text.split("\n")
+		content += live.leftOutHtml(snap, lines[:len(lines) - len(rest)], content)
 		title = result.get("title") or snap.title or _("Accessible Webpage")
 		page = viewer.renderPage(title, result.get("summary", ""), result.get("language"), content, bool(rest))
 		self._saveForDebugging(page)
