@@ -67,13 +67,19 @@ def _currentTreeInterceptor(snap):
 	return ti if isinstance(ti, VirtualBuffer) else None
 
 
+def _offsetsFor(ti, docHandle, ID):
+	"""Start and end offsets of an element in the browse mode buffer; raises LookupError if absent.
+	The lookup lives on the buffer's TextInfo, not on the buffer itself."""
+	return ti.makeTextInfo(textInfos.POSITION_FIRST)._getOffsetsFromFieldIdentifier(docHandle, ID)
+
+
 def _findOffsets(snap, ti, ref):
 	info = snap.refs.get(ref)
 	if info is None:
 		return None
 	try:
-		return ti._getOffsetsFromFieldIdentifier(info.docHandle, info.id)
-	except Exception:
+		return _offsetsFor(ti, info.docHandle, info.id)
+	except LookupError:
 		log.debug("%s is not at its old place in the buffer, looking it up by key" % ref)
 	# Another buffer or new IDs: find the same element by its key and position among look-alikes.
 	try:
@@ -84,8 +90,8 @@ def _findOffsets(snap, ti, ref):
 	for candidate in fresh.refs.values():
 		if candidate.key == info.key and candidate.index == info.index:
 			try:
-				return ti._getOffsetsFromFieldIdentifier(candidate.docHandle, candidate.id)
-			except Exception:
+				return _offsetsFor(ti, candidate.docHandle, candidate.id)
+			except LookupError:
 				log.debugWarning("Found %s by key but not in the buffer" % ref, exc_info=True)
 				return None
 	log.debugWarning("No element matches %s any more" % ref)
