@@ -167,6 +167,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		finally:
 			session.close()
 			server.stop()
+		# Field values stay out of the log: they can hold passwords.
+		log.debug("Viewer closed: %s" % (
+			"no action" if not response
+			else "%s %s, %d fields" % (response.get("action"), response.get("ref"), len(response.get("fields") or []))
+		))
 		if not response:
 			return
 		# Live expands may have re-snapshotted the page; its registry knows every ref shown.

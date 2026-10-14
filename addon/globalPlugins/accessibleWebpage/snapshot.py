@@ -162,12 +162,26 @@ class Snapshot:
 		"""Returns the live NVDAObject for a ref, or None if it no longer exists."""
 		info = self.refs.get(ref)
 		if info is None:
+			log.debugWarning("Unknown ref %s" % ref)
 			return None
+		obj = None
 		try:
-			return self.treeInterceptor.getNVDAObjectFromIdentifier(info.docHandle, info.id)
+			obj = self.treeInterceptor.getNVDAObjectFromIdentifier(info.docHandle, info.id)
 		except Exception:
-			log.debugWarning("Could not resolve %s" % ref, exc_info=True)
-			return None
+			log.debugWarning("Browse mode lookup of %s failed" % ref, exc_info=True)
+		if obj is None:
+			# The browse mode lookup can return None without saying why; ask the window directly.
+			try:
+				from NVDAObjects.IAccessible import getNVDAObjectFromEvent
+				obj = getNVDAObjectFromEvent(info.docHandle, winUser.OBJID_CLIENT, info.id)
+			except Exception:
+				log.debugWarning("Window lookup of %s failed" % ref, exc_info=True)
+		if obj is None:
+			log.debugWarning(
+				"Could not resolve %s (window %s, id %s, buffer alive %s)"
+				% (ref, info.docHandle, info.id, getattr(self.treeInterceptor, "isAlive", "?"))
+			)
+		return obj
 
 
 class _Node:

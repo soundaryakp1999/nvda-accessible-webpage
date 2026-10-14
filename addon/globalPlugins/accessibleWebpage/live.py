@@ -198,6 +198,7 @@ class LiveSession:
 
 	def _activate(self, ref):
 		obj = self.snapshot.resolve(ref)
+		log.debug("Activating %s: %r" % (ref, obj))
 		if obj is None:
 			return False
 		# Only the accessibility action works here: the viewer covers the page, so a mouse click would hit it.
