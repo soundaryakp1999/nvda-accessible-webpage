@@ -47,7 +47,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+shift+c",
 	)
 	def script_rebuildPage(self, gesture):
-		snap = self._takeSnapshot()
+		snap = self._takeSnapshot(inParts=bool(settings.effectivePartChars()))
 		if snap:
 			self._process(snap, None)
 
@@ -57,7 +57,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		gesture="kb:NVDA+shift+control+c",
 	)
 	def script_rebuildPageWithGoal(self, gesture):
-		snap = self._takeSnapshot()
+		# The goal may need content from anywhere on the page, so it is never split into parts.
+		snap = self._takeSnapshot(inParts=False)
 		if not snap:
 			return
 		dialog = wx.TextEntryDialog(
@@ -75,7 +76,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 		gui.runScriptModalDialog(dialog, onResult)
 
-	def _takeSnapshot(self):
+	def _takeSnapshot(self, inParts):
+		"""inParts: take the whole page, since only one part at a time is sent to the model."""
 		if self._busy:
 			# Translators: reported when a rebuild is already in progress.
 			ui.message(_("Still working on the previous request"))
@@ -86,7 +88,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			ui.message(_("Not in a web page"))
 			return None
 		try:
-			return snapshot.take(ti, settings.effectiveMaxChars())
+			return snapshot.take(ti, settings.SNAPSHOT_LIMIT if inParts else settings.effectiveMaxChars())
 		except snapshot.SnapshotError as e:
 			ui.message(str(e))
 		except Exception:
@@ -100,19 +102,25 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if not provider:
 			ui.message(error)
 			return
+		partChars = 0 if goal else settings.effectivePartChars()
+		part, rest = None, []
+		if partChars:
+			part, rest, _context = snapshot.splitPart(snap.text.split("\n"), partChars)
+			if not rest:
+				part = None  # The page fits in one part.
 		cacheKey = hashlib.sha256(
-			"\0".join((settings.providerId(), goal or "", snap.url, snap.text)).encode("utf-8")
+			"\0".join((settings.providerId(), goal or "", str(partChars), snap.url, snap.text)).encode("utf-8")
 		).hexdigest()
 		cached = self._cache.get(cacheKey)
 		if cached:
-			wx.CallAfter(self._show, snap, cached)
+			wx.CallAfter(self._show, snap, cached, rest)
 			return
 		self._busy = True
 		# Translators: reported while the page is being rebuilt.
 		ui.message(_("Rebuilding page, please wait"))
 		core.callLater(1500, self._progressBeep)
 		threading.Thread(
-			target=self._worker, args=(provider, snap, goal, cacheKey), daemon=True, name="accessibleWebpage"
+			target=self._worker, args=(provider, snap, goal, part, rest, cacheKey), daemon=True, name="accessibleWebpage"
 		).start()
 
 	def _progressBeep(self):
@@ -120,10 +128,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			tones.beep(440, 30)
 			core.callLater(1500, self._progressBeep)
 
-	def _worker(self, provider, snap, goal, cacheKey):
+	def _worker(self, provider, snap, goal, part, rest, cacheKey):
 		try:
 			result = provider.generateJson(
-				prompt.SYSTEM_PROMPT, prompt.buildUserMessage(snap, goal), prompt.RESPONSE_SCHEMA
+				prompt.SYSTEM_PROMPT, prompt.buildUserMessage(snap, goal, part), prompt.RESPONSE_SCHEMA
 			)
 			if not isinstance(result, dict) or not result.get("html"):
 				raise llm.LLMError("The model returned an empty page")
@@ -132,27 +140,28 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				log.exception("Rebuild failed")
 			wx.CallAfter(self._onError, e)
 			return
-		wx.CallAfter(self._onResult, snap, cacheKey, result)
+		wx.CallAfter(self._onResult, snap, cacheKey, result, rest)
 
 	def _onError(self, error):
 		self._busy = False
 		# Translators: reported when the rebuild failed; {error} is the reason.
 		ui.message(_("Rebuild failed: {error}").format(error=error))
 
-	def _onResult(self, snap, cacheKey, result):
+	def _onResult(self, snap, cacheKey, result, rest):
 		self._busy = False
 		self._cache[cacheKey] = result
 		while len(self._cache) > CACHE_SIZE:
 			self._cache.popitem(last=False)
-		self._show(snap, result)
+		self._show(snap, result, rest)
 
-	def _show(self, snap, result):
+	def _show(self, snap, result, rest):
+		"""rest: snapshot lines of a long page that are loaded with the viewer's Load more button."""
 		content = sanitizer.sanitize(result.get("html", ""), snap.refs.keys(), snap.texts)
 		title = result.get("title") or snap.title or _("Accessible Webpage")
-		page = viewer.renderPage(title, result.get("summary", ""), result.get("language"), content)
+		page = viewer.renderPage(title, result.get("summary", ""), result.get("language"), content, bool(rest))
 		provider, _error = settings.makeProvider()
-		session = live.LiveSession(snap, provider, settings.effectiveMaxChars())
-		server = live.ViewerServer(page, session.expand)
+		session = live.LiveSession(snap, provider, settings.effectivePartChars() or settings.effectiveMaxChars(), rest)
+		server = live.ViewerServer(page, session.expand, session.more)
 		try:
 			response = viewer.show(server.url)
 		finally:

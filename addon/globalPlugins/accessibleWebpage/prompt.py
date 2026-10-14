@@ -89,6 +89,9 @@ HTML RULES
 13. To show a text marked tid="tN" unchanged, don't copy it: write the element empty with
     data-text='tN', e.g. <p data-text='t12'></p> or <a data-ref='e4' data-text='t13'></a>. The viewer
     fills in the original text. Write the text yourself only when you shorten or change it.
+14. Repeated items such as feed posts, search results, products or comments: render each one as an
+    <article> starting with a heading that names it (e.g. the author and a few words, or the title),
+    so the user can jump between them. Keep each item's actions (like, comment, share) with it.
 """
 
 SYSTEM_PROMPT = _COMMON + """
@@ -119,6 +122,21 @@ Return JSON with:
 - "announcement": a short sentence the screen reader speaks, e.g. "Menu expanded, 6 links".
 """
 
+MORE_SYSTEM_PROMPT = _COMMON + """
+TASK
+The page is long, so the user's accessible rebuild shows it in parts. You receive the next part of the
+snapshot. Render it as an accessible HTML fragment that is appended at the end of the rebuild.
+- The part may start inside containers that began in an earlier part, and may end inside containers
+  that continue in the next one. Render only what is in this part.
+- Headings start at <h2>; use <h3> and lower inside items.
+- Never add a control to load more; the viewer has one.
+
+OUTPUT
+Return JSON with:
+- "html": the HTML fragment. Empty if nothing meaningful is in this part.
+- "announcement": a short sentence the screen reader speaks, e.g. "Loaded 8 more posts".
+"""
+
 RESPONSE_SCHEMA = {
 	"type": "OBJECT",
 	"properties": {
@@ -142,7 +160,8 @@ FRAGMENT_SCHEMA = {
 }
 
 
-def buildUserMessage(snapshot, goal=None):
+def buildUserMessage(snapshot, goal=None, part=None):
+	"""part: the snapshot lines to send when a long page is loaded in parts; None sends all of it."""
 	parts = []
 	if snapshot.title:
 		parts.append("Page title: %s" % snapshot.title)
@@ -154,9 +173,24 @@ def buildUserMessage(snapshot, goal=None):
 			"Put everything needed for this goal first. You may drop content that is unrelated to "
 			"the goal, but end with a short list of the other sections of the page." % goal
 		)
-	if snapshot.truncated:
+	if part is not None:
+		parts.append(
+			"Note: this is only the first part of a long page. The user loads the rest with the viewer's "
+			"Load more button. Rebuild only this part, don't guess what follows, and don't add a control "
+			"to load more."
+		)
+	elif snapshot.truncated:
 		parts.append("Note: the snapshot was truncated because the page is very long.")
-	parts.append("Accessibility tree snapshot:\n" + snapshot.text)
+	text = snapshot.text if part is None else "\n".join(part)
+	parts.append("Accessibility tree snapshot:\n" + text)
+	return "\n\n".join(parts)
+
+
+def buildMoreMessage(snapshot, part, context):
+	parts = ["Page title: %s" % snapshot.title]
+	if context:
+		parts.append("This part continues inside these containers:\n" + "\n".join(context))
+	parts.append("Next part of the snapshot:\n" + "\n".join(part))
 	return "\n\n".join(parts)
 
 

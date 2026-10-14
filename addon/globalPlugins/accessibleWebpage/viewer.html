@@ -21,6 +21,7 @@ a { color: #0050b3; }
 table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .25em .5em; }
 [hidden] { display: none !important; }
 [aria-busy=true] { opacity: .6; }
+#awp-more-region { margin-top: 1.5em; }
 #awp-toolbar { border-top: 2px solid #ccc; margin-top: 2em; padding-top: 1em; }
 </style>
 </head>
@@ -31,6 +32,9 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 <div id="awp-content">
 {{CONTENT}}
 </div>
+<div id="awp-more-region"{{MOREHIDDEN}}>
+<button type="button" id="awp-more">{{MORE}}</button>
+</div>
 <div id="awp-toolbar" role="region" aria-label="{{TOOLBAR}}">
 <button type="button" id="awp-apply">{{APPLY}}</button>
 <button type="button" id="awp-close">{{CLOSE}}</button>
@@ -39,8 +43,9 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 // MSHTML caps HTML dialogs at IE8 document mode, whatever X-UA-Compatible says, so this script
 // sticks to what IE8 offers: attachEvent, no hasAttribute, and submit events that don't bubble.
 (function () {
-	var done = false, busy = false, liveCount = 0;
+	var done = false, busy = false, liveCount = 0, partCount = 0;
 	var content = document.getElementById('awp-content');
+	var moreButton = document.getElementById('awp-more');
 
 	function on(target, type, handler) {
 		if (target.addEventListener) {
@@ -222,12 +227,33 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 		});
 	}
 
+	// Long pages: NVDA rebuilds the next part (or scrolls the original page for more) and returns it.
+	function loadMore() {
+		if (busy) { return; }
+		busy = true;
+		moreButton.setAttribute('aria-busy', 'true');
+		post('more', {}, function (data) {
+			busy = false;
+			moreButton.removeAttribute('aria-busy');
+			if (!data || !data.html) { return; }
+			var part = document.createElement('div');
+			part.id = 'awp-part-' + (++partCount);
+			part.tabIndex = -1;
+			part.innerHTML = data.html;
+			content.appendChild(part);
+			initPart(part);
+			// Moves the browse mode cursor to the start of what was loaded.
+			part.focus();
+		});
+	}
+
 	initPart(content);
 
 	on(document, 'click', function (e) {
 		var target = targetOf(e);
 		if (target && target.id === 'awp-apply') { finish({ action: 'apply', fields: collect() }); return; }
 		if (target && target.id === 'awp-close') { window.close(); return; }
+		if (target && target.id === 'awp-more') { loadMore(); return; }
 		var local = closest(target, function (n) { return n.getAttribute('data-expand') || n.getAttribute('data-toggle'); });
 		if (local) {
 			prevent(e);

@@ -28,7 +28,8 @@ DIALOG_OPTIONS = "resizable:yes;help:no;status:no;scroll:yes;dialogWidth:1000px;
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "viewer.html")
 
 
-def renderPage(title, summary, language, content):
+def renderPage(title, summary, language, content, hasMore=False):
+	"""hasMore: show the Load more button, for long pages rebuilt in parts."""
 	with open(TEMPLATE_PATH, encoding="utf-8") as f:
 		page = f.read()
 	replacements = {
@@ -43,6 +44,9 @@ def renderPage(title, summary, language, content):
 		"{{APPLY}}": escape(_("Fill in the original page without submitting")),
 		# Translators: button that closes the viewer.
 		"{{CLOSE}}": escape(_("Close")),
+		# Translators: button at the end of a long page that rebuilds the next part of it.
+		"{{MORE}}": escape(_("Load more")),
+		"{{MOREHIDDEN}}": "" if hasMore else " hidden",
 	}
 	for key, value in replacements.items():
 		page = page.replace(key, value)

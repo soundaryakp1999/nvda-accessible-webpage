@@ -139,7 +139,7 @@ class RefRegistry:
 
 
 class Snapshot:
-	def __init__(self, treeInterceptor, text, registry, title, url, hwnd, truncated):
+	def __init__(self, treeInterceptor, text, registry, title, url, hwnd, truncated, maxChars):
 		self.treeInterceptor = treeInterceptor
 		self.text = text
 		self.registry = registry
@@ -147,6 +147,8 @@ class Snapshot:
 		self.url = url
 		self.hwnd = hwnd
 		self.truncated = truncated
+		# The size limit it was taken with, reused when re-snapshotting the same page.
+		self.maxChars = maxChars
 
 	@property
 	def refs(self):
@@ -384,6 +386,54 @@ def _joinWrappers(lines):
 	return out
 
 
+def splitPart(lines, maxChars):
+	"""Splits snapshot lines into a part of at most maxChars and the rest, for long pages that are
+	loaded in parts. Prefers the shallowest boundary in the last 40% of the part, so that feed posts,
+	search results and sections stay whole.
+
+	Returns (part, rest, context): context holds the opening lines of the containers that are still
+	open where the rest starts, so the model knows where the rest belongs.
+	"""
+	size = 0
+	stack = []
+	best = None
+	for i, line in enumerate(lines):
+		size += len(line) + 1
+		if size > maxChars and i:
+			break
+		if _OPEN_LINE.fullmatch(line):
+			stack.append(line)
+		elif _CLOSE_LINE.fullmatch(line) and stack:
+			stack.pop()
+		if size >= maxChars * 0.6 and (best is None or len(stack) <= len(best[1])):
+			best = (i + 1, list(stack))
+	else:
+		return lines, [], []
+	cut, context = best or (i, stack)
+	return lines[:cut], lines[cut:], context
+
+
+_REF = re.compile(r' ref="(e\d+)"')
+
+
+def lastMainRef(lines):
+	"""The ref of the last operable element in the main landmark, or on the page if it has none.
+	Scrolling it into view makes infinite feeds load more."""
+	stack = []
+	last = lastInMain = None
+	for line in lines:
+		refs = _REF.findall(line)
+		if refs:
+			last = refs[-1]
+			if any(stack) or 'landmark="main"' in line:
+				lastInMain = refs[-1]
+		if _OPEN_LINE.fullmatch(line):
+			stack.append('landmark="main"' in line)
+		elif _CLOSE_LINE.fullmatch(line) and stack:
+			stack.pop()
+	return lastInMain or last
+
+
 def take(treeInterceptor, maxChars, registry=None):
 	"""Pass the registry of an earlier snapshot of the same page to keep its refs."""
 	if not treeInterceptor.isReady:
@@ -408,4 +458,4 @@ def take(treeInterceptor, maxChars, registry=None):
 		hwnd = winUser.getAncestor(rootObj.windowHandle, getattr(winUser, "GA_ROOT", 2))
 	except Exception:
 		hwnd = None
-	return Snapshot(treeInterceptor, text, serializer.registry, title, url, hwnd, serializer.truncated)
+	return Snapshot(treeInterceptor, text, serializer.registry, title, url, hwnd, serializer.truncated, maxChars)

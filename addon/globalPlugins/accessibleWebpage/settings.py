@@ -28,6 +28,8 @@ CHARS_PER_TOKEN = 3.5
 # Share of a local context the snapshot may use; the rest is for the prompt, thinking and the answer.
 LOCAL_INPUT_SHARE = 0.55
 LOCAL_INPUT_SHARE_THINKING = 0.35
+# Upper bound for snapshots of pages loaded in parts; only the parts are sent to the model.
+SNAPSHOT_LIMIT = 2000000
 
 confspec = {
 	"provider": "option('gemini', 'openai', 'ollama', 'server', default='gemini')",
@@ -46,6 +48,7 @@ confspec = {
 	"serverThinking": "option('off', 'on', 'default', default='off')",
 	"clickMethod": "option('action', 'mouse', default='action')",
 	"maxChars": "integer(default=150000, min=5000, max=2000000)",
+	"partChars": "integer(default=30000, min=0, max=2000000)",
 	"timeout": "integer(default=300, min=10, max=1800)",
 }
 
@@ -169,6 +172,12 @@ def effectiveMaxChars():
 		share = LOCAL_INPUT_SHARE if thinking == "off" else LOCAL_INPUT_SHARE_THINKING
 		return min(c["maxChars"], int(context * CHARS_PER_TOKEN * share))
 	return c["maxChars"]
+
+
+def effectivePartChars():
+	"""How much of a long page is rebuilt at a time, or 0 to send the whole page at once."""
+	part = conf()["partChars"]
+	return min(max(part, 5000), effectiveMaxChars()) if part else 0
 
 
 def _choiceIndex(options, key):
@@ -339,6 +348,14 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 			max=2000000,
 			initial=c["maxChars"],
 		)
+		self.partCharsSpin = helper.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Load long pages in p&arts of (characters; 0 sends the whole page at once):"),
+			nvdaControls.SelectOnFocusSpinCtrl,
+			min=0,
+			max=2000000,
+			initial=c["partChars"],
+		)
 		self.timeoutSpin = helper.addLabeledControl(
 			# Translators: label in the settings panel.
 			_("Request &timeout (seconds; local models may need more):"),
@@ -407,6 +424,7 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		c["serverThinking"] = THINKING_MODES[self.serverThinkingChoice.GetSelection()][0]
 		c["clickMethod"] = CLICK_METHODS[self.clickMethodChoice.GetSelection()][0]
 		c["maxChars"] = self.maxCharsSpin.GetValue()
+		c["partChars"] = self.partCharsSpin.GetValue()
 		c["timeout"] = self.timeoutSpin.GetValue()
 
 

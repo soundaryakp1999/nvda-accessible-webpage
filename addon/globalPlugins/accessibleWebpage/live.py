@@ -4,6 +4,8 @@ The viewer is served from a loopback HTTP server so its script can call back
 into NVDA while the dialog stays open. That lets "expand" style controls whose
 content is not in the snapshot be operated on the original page in the
 background, with only the newly revealed content rebuilt and inserted in place.
+Long pages are rebuilt in parts the same way: "Load more" sends the next part of
+the snapshot, then scrolls the original page so feeds load further posts.
 
 Uses raw sockets rather than http.server, which NVDA's bundled Python may not ship.
 """
@@ -29,6 +31,8 @@ addonHandler.initTranslation()
 MAX_REQUEST = 1024 * 1024
 SETTLE_INTERVAL = 0.4
 SETTLE_TIMEOUT = 4.0
+# Feeds fetch new posts from the network after scrolling, which takes longer than expanding.
+SCROLL_SETTLE_TIMEOUT = 8.0
 _CLOSING_TAG = re.compile(r"\s*</\w+>\s*$")
 
 
@@ -73,22 +77,27 @@ class _Beeper:
 		self._stop.set()
 
 
-def addedLines(before, after, ref):
+def addedLines(before, after, ref=None):
 	"""Snapshot lines that are new or changed in after, excluding the activated control itself."""
 	a, b = before.split("\n"), after.split("\n")
-	marker = 'ref="%s"' % ref
+	marker = 'ref="%s"' % ref if ref else None
 	out = []
 	for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
 		if tag in ("insert", "replace"):
-			out.extend(line for line in b[j1:j2] if marker not in line and not _CLOSING_TAG.match(line))
+			out.extend(
+				line for line in b[j1:j2]
+				if not (marker and marker in line) and not _CLOSING_TAG.match(line)
+			)
 	return out
 
 
 class LiveSession:
-	def __init__(self, snap, provider, maxChars):
+	def __init__(self, snap, provider, partChars, pending=()):
+		"""pending: snapshot lines of a long page that are not shown yet, loaded partChars at a time."""
 		self.snapshot = snap
 		self.provider = provider
-		self.maxChars = maxChars
+		self.partChars = partChars
+		self.pending = list(pending)
 		self.closed = False
 		self._lock = threading.Lock()
 
@@ -129,6 +138,62 @@ class LiveSession:
 			speak(result.get("announcement") or _("Expanded"))
 			return {"html": html}
 
+	def more(self):
+		"""Runs on a server thread. Rebuilds the next part of a long page and returns {"html": ...}.
+
+		Parts of the snapshot that are not shown yet come first. After those, the original page is
+		scrolled to the end of its main content, which makes feeds and infinite lists load more.
+		"""
+		with self._lock:
+			if self.closed:
+				return {"html": ""}
+			if self.provider is None:
+				# Translators: spoken when loading more is impossible because no AI provider is configured.
+				speak(_("No AI provider is configured"))
+				return {"html": ""}
+			if not self.pending:
+				# Translators: spoken while the original page is scrolled so that it loads more content.
+				speak(_("Loading more from the page"))
+				if not callOnMain(self._scrollToEnd):
+					# Translators: spoken when the original page could not be scrolled.
+					speak(_("Could not scroll the page. Try rebuilding it."))
+					return {"html": ""}
+				newSnap, added = self._waitForChanges(None, SCROLL_SETTLE_TIMEOUT)
+				self.snapshot = newSnap
+				if not added:
+					# Translators: spoken when scrolling the original page revealed nothing new.
+					speak(_("Nothing more on the page"))
+					return {"html": ""}
+				self.pending = added
+			part, self.pending, context = snapshot.splitPart(self.pending, self.partChars)
+			with _Beeper():
+				result = self.provider.generateJson(
+					prompt.MORE_SYSTEM_PROMPT,
+					prompt.buildMoreMessage(self.snapshot, part, context),
+					prompt.FRAGMENT_SCHEMA,
+				)
+			if self.closed:
+				return {"html": ""}
+			html = sanitizer.sanitize(result.get("html", ""), self.snapshot.refs.keys(), self.snapshot.texts)
+			if not html.strip():
+				# Translators: spoken when the next part of a page had nothing worth showing.
+				speak(_("Nothing new in this part. Press Load more again to continue."))
+				return {"html": ""}
+			# Translators: default announcement after more of a long page was loaded.
+			speak(result.get("announcement") or _("Loaded more"))
+			return {"html": html}
+
+	def _scrollToEnd(self):
+		obj = self.snapshot.resolve(snapshot.lastMainRef(self.snapshot.text.split("\n")) or "")
+		if obj is None:
+			return False
+		try:
+			obj.scrollIntoView()
+			return True
+		except Exception:
+			log.debugWarning("scrollIntoView failed", exc_info=True)
+			return False
+
 	def _activate(self, ref):
 		obj = self.snapshot.resolve(ref)
 		if obj is None:
@@ -141,15 +206,15 @@ class LiveSession:
 			log.debugWarning("doAction failed for %s" % ref, exc_info=True)
 			return False
 
-	def _waitForChanges(self, ref):
+	def _waitForChanges(self, ref, timeout=SETTLE_TIMEOUT):
 		"""Re-snapshots until the page stops changing, keeping refs stable via the shared registry."""
 		before = self.snapshot.text
-		ti, registry = self.snapshot.treeInterceptor, self.snapshot.registry
+		ti, registry, maxChars = self.snapshot.treeInterceptor, self.snapshot.registry, self.snapshot.maxChars
 		latest, previous = self.snapshot, None
-		deadline = time.monotonic() + SETTLE_TIMEOUT
+		deadline = time.monotonic() + timeout
 		while time.monotonic() < deadline:
 			time.sleep(SETTLE_INTERVAL)
-			latest = callOnMain(lambda: snapshot.take(ti, self.maxChars, registry))
+			latest = callOnMain(lambda: snapshot.take(ti, maxChars, registry))
 			added = addedLines(before, latest.text, ref)
 			if added and added == previous:
 				break
@@ -160,9 +225,10 @@ class LiveSession:
 class ViewerServer:
 	"""Serves the viewer page and its expand endpoint on 127.0.0.1, behind a random token."""
 
-	def __init__(self, page, onExpand):
+	def __init__(self, page, onExpand, onMore):
 		self._page = page.encode("utf-8")
 		self._onExpand = onExpand
+		self._onMore = onMore
 		self._token = secrets.token_urlsafe(16)
 		self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self._sock.bind(("127.0.0.1", 0))
@@ -239,6 +305,15 @@ class ViewerServer:
 				log.debugWarning("Expand failed", exc_info=True)
 				# Translators: spoken when expanding failed; {error} is the reason.
 				speak(_("Expanding failed: {error}").format(error=e))
+				result = {"html": ""}
+			return "200 OK", "application/json; charset=utf-8", json.dumps(result).encode("utf-8")
+		if method == "POST" and path == "/%s/more" % self._token:
+			try:
+				result = self._onMore()
+			except Exception as e:
+				log.debugWarning("Loading more failed", exc_info=True)
+				# Translators: spoken when loading more of a page failed; {error} is the reason.
+				speak(_("Loading more failed: {error}").format(error=e))
 				result = {"html": ""}
 			return "200 OK", "application/json; charset=utf-8", json.dumps(result).encode("utf-8")
 		return "404 Not Found", "text/plain", b""

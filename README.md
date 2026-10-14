@@ -23,6 +23,11 @@ In the rebuilt view:
     control in the background, rebuilds only what appeared, and inserts it after the button.
     NVDA says "Expanding", then describes what appeared.
 - "Fill in the original page without submitting" fills in the fields without clicking anything.
+- Long pages such as LinkedIn or Facebook feeds are rebuilt in parts, so the first view comes quickly
+  and costs fewer tokens. "Load more" at the end of the view rebuilds the next part and moves you to its
+  start. Once every part is shown, "Load more" scrolls the original page so the feed loads more posts,
+  then rebuilds only the new ones. The part size is in the settings (30,000 characters by default;
+  0 sends the whole page at once). The goal-based rebuild always reads the whole page.
 - Escape closes the view without doing anything.
 
 If the page changes after you act (a new step, an error message), press NVDA+shift+c again.
@@ -113,14 +118,14 @@ This produces `dist/accessibleWebpage-<version>.nvda-addon`. Open that file to i
    `aria-required` and `aria-expanded`.
 4. **View** ([viewer.py](addon/globalPlugins/accessibleWebpage/viewer.py)): a modal MSHTML dialog, the same
    engine NVDA uses for browseable messages. The page's script returns your interaction as JSON.
+   MSHTML runs these dialogs in IE8 document mode whatever the page asks for, so the viewer script
+   uses only what IE8 supports, and the sanitizer turns HTML5 elements such as `nav` and `main` into
+   `div`s with the matching ARIA role.
    The page is served from a loopback server protected by a random token
    ([live.py](addon/globalPlugins/accessibleWebpage/live.py)), so it can ask NVDA to expand controls
    while the view stays open. After each expand, the add-on takes a new snapshot of the page and
    sends only the new or changed lines to the model. Element IDs stay the same across snapshots, so
-   new fields and buttons still link to the real page.
-   MSHTML runs these dialogs in IE8 document mode whatever the page asks for, so the viewer script
-   uses only what IE8 supports, and the sanitizer turns HTML5 elements such as `nav` and `main` into
-   `div`s with the matching ARIA role.
+   new fields and buttons still link to the real page. "Load more" works the same way for long pages.
 5. **Replay** ([actions.py](addon/globalPlugins/accessibleWebpage/actions.py)): brings the browser to the
    front, focuses each changed field, selects its contents and types the new value, so React and similar
    frameworks get real input events. It toggles checkboxes and radios, picks options, and then clicks the
@@ -137,4 +142,6 @@ strings are never sent. For sensitive pages, use Ollama on your own computer so 
 - Content hidden from the accessibility tree (for example `aria-hidden`) or drawn on a canvas is invisible
   to NVDA, so the model can't see it either.
 - Labels the model guessed from class names end with "(guessed)".
-- Very large pages are cut off at the configured character limit. Use the goal-based rebuild for those.
+- The goal-based rebuild sends the whole page and cuts it off at the configured character limit.
+- Loading more from a feed scrolls the original page behind the view. Browsers may hold back new posts
+  if the view covers the browser window completely; a smaller or moved view avoids that.
