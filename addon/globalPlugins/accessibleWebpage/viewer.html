@@ -36,9 +36,27 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 <button type="button" id="awp-close">{{CLOSE}}</button>
 </div>
 <script>
+// MSHTML caps HTML dialogs at IE8 document mode, whatever X-UA-Compatible says, so this script
+// sticks to what IE8 offers: attachEvent, no hasAttribute, and submit events that don't bubble.
 (function () {
-	var done = false;
+	var done = false, busy = false, liveCount = 0;
 	var content = document.getElementById('awp-content');
+
+	function on(target, type, handler) {
+		if (target.addEventListener) {
+			target.addEventListener(type, handler, false);
+		} else {
+			target.attachEvent('on' + type, function () { return handler(window.event); });
+		}
+	}
+
+	function prevent(e) {
+		if (e.preventDefault) { e.preventDefault(); } else { e.returnValue = false; }
+	}
+
+	function targetOf(e) { return e.target || e.srcElement; }
+
+	function has(el, name) { return el.getAttribute(name) !== null; }
 
 	function lower(s) { return (s || '').toLowerCase(); }
 
@@ -94,23 +112,43 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 		window.close();
 	}
 
+	function post(url, payload, callback) {
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', url, true);
+		xhr.setRequestHeader('Content-Type', 'application/json');
+		xhr.onreadystatechange = function () {
+			if (xhr.readyState !== 4) { return; }
+			var data = null;
+			try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
+			callback(data);
+		};
+		xhr.send(JSON.stringify(payload));
+	}
+
 	function initSelects(root) {
 		var selects = root.getElementsByTagName('select');
 		for (var i = 0; i < selects.length; i++) { selects[i].awpInitial = selects[i].selectedIndex; }
 	}
 
 	// Local toggles: show/hide content that is already in this page.
+	// IE8 doesn't restyle [hidden] when the attribute changes, so the inline style is set too.
 	function setOpen(btn, open) {
 		var panel = document.getElementById(btn.getAttribute('data-toggle'));
 		if (!panel) { return; }
-		if (open) { panel.removeAttribute('hidden'); } else { panel.setAttribute('hidden', 'hidden'); }
+		if (open) {
+			panel.removeAttribute('hidden');
+			panel.style.display = '';
+		} else {
+			panel.setAttribute('hidden', 'hidden');
+			panel.style.display = 'none';
+		}
 		btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 	}
 
 	function toggle(btn) {
 		var panel = document.getElementById(btn.getAttribute('data-toggle'));
 		if (!panel) { return; }
-		var open = panel.hasAttribute('hidden');
+		var open = has(panel, 'hidden');
 		var group = btn.getAttribute('data-toggle-group');
 		if (group && open) {
 			var others = content.querySelectorAll('[data-toggle-group]');
@@ -127,26 +165,48 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 			var panel = document.getElementById(btns[i].getAttribute('data-toggle'));
 			if (panel) {
 				btns[i].setAttribute('aria-controls', panel.id);
-				btns[i].setAttribute('aria-expanded', panel.hasAttribute('hidden') ? 'false' : 'true');
+				btns[i].setAttribute('aria-expanded', has(panel, 'hidden') ? 'false' : 'true');
 			}
 		}
 	}
 
+	// Enter in a text field submits its form; without this the dialog would navigate away.
+	function onSubmit(e) {
+		prevent(e);
+		var form = targetOf(e);
+		var btn = form.querySelector('[type=submit][data-ref]');
+		if (btn) {
+			finish({ action: 'click', ref: btn.getAttribute('data-ref'), fields: collect() });
+		} else {
+			finish({ action: 'apply', fields: collect() });
+		}
+		return false;
+	}
+
+	function initForms(root) {
+		var forms = root.getElementsByTagName('form');
+		for (var i = 0; i < forms.length; i++) {
+			if (!forms[i].awpBound) {
+				forms[i].awpBound = true;
+				on(forms[i], 'submit', onSubmit);
+			}
+		}
+	}
+
+	function initPart(root) {
+		initSelects(root);
+		initToggles(root);
+		initForms(root);
+	}
+
 	// Live expand: NVDA operates the control on the original page and returns the revealed content.
-	var expanding = false, liveCount = 0;
 	function expand(btn) {
-		if (expanding) { return; }
-		expanding = true;
+		if (busy) { return; }
+		busy = true;
 		btn.setAttribute('aria-busy', 'true');
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', 'expand', true);
-		xhr.setRequestHeader('Content-Type', 'application/json');
-		xhr.onreadystatechange = function () {
-			if (xhr.readyState !== 4) { return; }
-			expanding = false;
+		post('expand', { ref: btn.getAttribute('data-expand') }, function (data) {
+			busy = false;
 			btn.removeAttribute('aria-busy');
-			var data = null;
-			try { data = JSON.parse(xhr.responseText); } catch (err) { return; }
 			if (!data || !data.html) { return; }
 			var panel = document.createElement('div');
 			panel.id = 'awp-live-' + (++liveCount);
@@ -157,49 +217,35 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 			// From now on the button just shows and hides what was fetched.
 			btn.removeAttribute('data-expand');
 			btn.setAttribute('data-toggle', panel.id);
-			initSelects(panel);
-			initToggles(panel);
+			initPart(panel);
 			initToggles(anchor.parentNode);
-		};
-		xhr.send(JSON.stringify({ ref: btn.getAttribute('data-expand') }));
+		});
 	}
 
-	initSelects(content);
-	initToggles(content);
+	initPart(content);
 
-	document.addEventListener('click', function (e) {
-		var target = e.target || e.srcElement;
+	on(document, 'click', function (e) {
+		var target = targetOf(e);
 		if (target && target.id === 'awp-apply') { finish({ action: 'apply', fields: collect() }); return; }
 		if (target && target.id === 'awp-close') { window.close(); return; }
 		var local = closest(target, function (n) { return n.getAttribute('data-expand') || n.getAttribute('data-toggle'); });
 		if (local) {
-			e.preventDefault();
+			prevent(e);
 			if (local.getAttribute('data-expand')) { expand(local); } else { toggle(local); }
 			return;
 		}
 		var el = closest(target, function (n) { return n.getAttribute('data-ref') && isActivator(n); });
 		if (el) {
-			e.preventDefault();
+			prevent(e);
 			finish({ action: 'click', ref: el.getAttribute('data-ref'), fields: collect() });
 			return;
 		}
-		if (closest(target, function (n) { return lower(n.tagName) === 'a'; })) { e.preventDefault(); }
-	}, false);
+		if (closest(target, function (n) { return lower(n.tagName) === 'a'; })) { prevent(e); }
+	});
 
-	document.addEventListener('submit', function (e) {
-		e.preventDefault();
-		var form = e.target || e.srcElement;
-		var btn = form.querySelector('[type=submit][data-ref]');
-		if (btn) {
-			finish({ action: 'click', ref: btn.getAttribute('data-ref'), fields: collect() });
-		} else {
-			finish({ action: 'apply', fields: collect() });
-		}
-	}, true);
-
-	document.addEventListener('keydown', function (e) {
+	on(document, 'keydown', function (e) {
 		if (e.keyCode === 27) { window.close(); }
-	}, false);
+	});
 })();
 </script>
 </body>

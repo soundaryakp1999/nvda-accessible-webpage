@@ -118,6 +118,9 @@ This produces `dist/accessibleWebpage-<version>.nvda-addon`. Open that file to i
    while the view stays open. After each expand, the add-on takes a new snapshot of the page and
    sends only the new or changed lines to the model. Element IDs stay the same across snapshots, so
    new fields and buttons still link to the real page.
+   MSHTML runs these dialogs in IE8 document mode whatever the page asks for, so the viewer script
+   uses only what IE8 supports, and the sanitizer turns HTML5 elements such as `nav` and `main` into
+   `div`s with the matching ARIA role.
 5. **Replay** ([actions.py](addon/globalPlugins/accessibleWebpage/actions.py)): brings the browser to the
    front, focuses each changed field, selects its contents and types the new value, so React and similar
    frameworks get real input events. It toggles checkboxes and radios, picks options, and then clicks the
