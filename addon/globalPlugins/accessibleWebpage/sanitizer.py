@@ -72,11 +72,27 @@ INPUT_TYPES = frozenset((
 ))
 
 
+class _IdCollector(HTMLParser):
+	"""Collects the ids in the model's HTML, so toggles can be checked against them."""
+
+	def __init__(self):
+		super().__init__(convert_charrefs=True)
+		self.ids = set()
+
+	def handle_starttag(self, tag, attrs):
+		for k, v in attrs:
+			if k == "id" and v:
+				self.ids.add(v)
+
+	handle_startendtag = handle_starttag
+
+
 class _Sanitizer(HTMLParser):
-	def __init__(self, validRefs, texts):
+	def __init__(self, validRefs, texts, ids):
 		super().__init__(convert_charrefs=True)
 		self.validRefs = validRefs
 		self.texts = texts
+		self.ids = ids
 		self.out = []
 		self.stack = []  # (source tag, output tag) of open elements
 		self.labels = []  # [index of the <label> tag in out, or None if it has for, bound]
@@ -120,6 +136,19 @@ class _Sanitizer(HTMLParser):
 			if selfClosing:
 				self._closeTo(source)
 
+	@staticmethod
+	def _repairToggle(clean):
+		"""A toggle whose container the model never wrote can't show anything here. If it stands for
+		a control on the page, operate that control live instead (data-expand), else leave it plain."""
+		keys = [k for k, _v in clean]
+		if "data-expand" in keys:
+			return clean
+		ref = dict(clean).get("data-ref")
+		clean = [(k, v) for k, v in clean if k not in ("data-ref", "aria-expanded", "aria-controls")]
+		if ref:
+			clean.append(("data-expand", ref))
+		return clean
+
 	def _ie8Tag(self, source, clean):
 		"""Maps an HTML5 element to its IE8-safe equivalent, adding the landmark role to clean."""
 		tag, role = IE8_REWRITES.get(source, (source, None))
@@ -149,6 +178,7 @@ class _Sanitizer(HTMLParser):
 		allowed = TAG_ATTRS.get(tag, ())
 		clean = []
 		seen = set()
+		brokenToggle = False
 		for k, v in attrs:
 			k = k.lower()
 			if k in seen or not (k in GLOBAL_ATTRS or k in allowed or k.startswith("aria-")):
@@ -159,6 +189,9 @@ class _Sanitizer(HTMLParser):
 					continue
 			elif k in ("data-toggle", "data-toggle-group"):
 				if not v or not _NAME.match(v) or v.startswith("awp-"):
+					continue
+				if k == "data-toggle" and v not in self.ids:
+					brokenToggle = True
 					continue
 			elif k == "href":
 				v = "#"
@@ -182,9 +215,12 @@ class _Sanitizer(HTMLParser):
 			clean.append(("href", "#"))
 		if tag == "button" and "type" not in seen:
 			clean.append(("type", "button"))
+		if brokenToggle:
+			clean = self._repairToggle(clean)
 		if "required" in seen and "aria-required" not in seen:
 			clean.append(("aria-required", "true"))
-		if "aria-expanded" not in seen and any(k == "data-expand" for k, _v in clean):
+		keys = {k for k, _v in clean}
+		if "data-expand" in keys and "aria-expanded" not in keys:
 			clean.append(("aria-expanded", "false"))
 		return clean
 
@@ -225,6 +261,9 @@ def _attrs(clean):
 
 def sanitize(html, validRefs, texts=None):
 	"""texts: the snapshot's long texts by id, for data-text."""
-	parser = _Sanitizer(frozenset(validRefs), texts or {})
+	collector = _IdCollector()
+	collector.feed(html or "")
+	collector.close()
+	parser = _Sanitizer(frozenset(validRefs), texts or {}, collector.ids)
 	parser.feed(html or "")
 	return parser.result()

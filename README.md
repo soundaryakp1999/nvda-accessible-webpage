@@ -149,6 +149,12 @@ With Gemini or OpenAI, the page's text, structure and field values are sent to G
 requests are made with `store: false`, so they are not kept as stored responses. Password values and URL query
 strings are never sent. For sensitive pages, use Ollama on your own computer so nothing leaves it.
 
+## Troubleshooting
+
+With NVDA's logging level set to Debug, the add-on logs each step, the viewer logs every control you
+activate, and the last rebuilt page is saved as `accessibleWebpage-last.html` in your temp folder. That
+file contains the page's text, so delete it when you are done.
+
 ## Limitations
 
 - Content hidden from the accessibility tree (for example `aria-hidden`) or drawn on a canvas is invisible

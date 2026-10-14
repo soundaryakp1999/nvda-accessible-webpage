@@ -5,6 +5,9 @@ show it in a modal viewer -> replay the user's interaction on the real page.
 """
 
 import hashlib
+import logging
+import os
+import tempfile
 import threading
 from collections import OrderedDict
 
@@ -183,6 +186,19 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		else:
 			self._show(snap, result, rest)
 
+	@staticmethod
+	def _saveForDebugging(page):
+		"""With debug logging on, keeps the last rebuilt page in the temp folder for diagnosis."""
+		if not log.isEnabledFor(logging.DEBUG):
+			return
+		path = os.path.join(tempfile.gettempdir(), "accessibleWebpage-last.html")
+		try:
+			with open(path, "w", encoding="utf-8") as f:
+				f.write(page)
+			log.debug("Rebuilt page saved to %s" % path)
+		except OSError:
+			log.debugWarning("Could not save the rebuilt page", exc_info=True)
+
 	def _showTree(self, snap, result, rest):
 		"""rest: snapshot lines of a long page that the dialog's Load more button adds to the tree."""
 		nodes = tree.normalizeNodes(result.get("nodes"), snap.refs)
@@ -201,6 +217,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		content = sanitizer.sanitize(result.get("html", ""), snap.refs.keys(), snap.texts)
 		title = result.get("title") or snap.title or _("Accessible Webpage")
 		page = viewer.renderPage(title, result.get("summary", ""), result.get("language"), content, bool(rest))
+		self._saveForDebugging(page)
 		provider, _error = settings.makeProvider()
 		session = live.LiveSession(snap, provider, settings.effectivePartChars() or settings.effectiveMaxChars(), rest)
 		server = live.ViewerServer(page, session.expand, session.more)

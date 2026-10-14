@@ -216,7 +216,10 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 
 	function toggle(btn) {
 		var panel = document.getElementById(btn.getAttribute('data-toggle'));
-		if (!panel) { return; }
+		if (!panel) {
+			report('error', 'toggle target missing: ' + btn.getAttribute('data-toggle'));
+			return;
+		}
 		var open = has(panel, 'hidden');
 		var group = btn.getAttribute('data-toggle-group');
 		if (group && open) {
@@ -316,8 +319,19 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 	initPart(content);
 	report('info', 'viewer ready, document mode ' + (document.documentMode || 'unknown') + ', JSON ' + (window.JSON ? 'native' : 'fallback'));
 
+	// Logs what was activated and how the viewer handles it.
+	function describe(el) {
+		var parts = [lower(el.tagName)], names = ['data-ref', 'data-expand', 'data-toggle', 'aria-expanded', 'type', 'id'];
+		for (var i = 0; i < names.length; i++) {
+			if (el.getAttribute(names[i])) { parts.push(names[i] + '=' + el.getAttribute(names[i])); }
+		}
+		return parts.join(' ') + ' "' + String(el.innerText || '').substring(0, 60) + '"';
+	}
+
 	on(document, 'click', function (e) {
 		var target = targetOf(e);
+		var control = closest(target, function (n) { return isActivator(n) || n.getAttribute('data-ref'); });
+		if (control) { report('info', 'activated ' + describe(control)); }
 		if (target && target.id === 'awp-apply') { finish({ action: 'apply', fields: collect() }); return; }
 		if (target && target.id === 'awp-close') { window.close(); return; }
 		if (target && target.id === 'awp-more') { loadMore(); return; }
