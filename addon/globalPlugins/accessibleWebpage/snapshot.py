@@ -252,6 +252,13 @@ class _Node:
 		self.children = []
 
 
+def _toInt(value):
+	try:
+		return int(value)
+	except (TypeError, ValueError):
+		return None
+
+
 def _clean(s):
 	if not s:
 		return ""
@@ -335,8 +342,9 @@ class _Serializer:
 
 		ref = None
 		if self._isTarget(role, states):
-			docHandle = field.get("controlIdentifier_docHandle")
-			controlId = field.get("controlIdentifier_ID")
+			# Fields carry these as strings; NVDA's lookups and Chrome's accChild need integers.
+			docHandle = _toInt(field.get("controlIdentifier_docHandle"))
+			controlId = _toInt(field.get("controlIdentifier_ID"))
 			if docHandle is not None and controlId is not None:
 				key = self._key(node, role, name, states)
 				index = self.keyCounts.get(key, 0)
