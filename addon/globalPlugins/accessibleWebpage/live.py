@@ -115,12 +115,14 @@ class LiveSession:
 				return {"html": ""}
 			# Translators: spoken while an expandable control is operated on the original page.
 			speak(_("Expanding"))
+			log.debug("Expanding %s" % ref)
 			if not callOnMain(lambda: self._activate(ref)):
 				# Translators: spoken when an expandable control could not be operated.
 				speak(_("Could not expand this on the page. Try rebuilding the page."))
 				return {"html": ""}
 			newSnap, added = self._waitForChanges(ref)
 			self.snapshot = newSnap
+			log.debug("Expanding %s revealed %d lines" % (ref, len(added)))
 			if not added:
 				# Translators: spoken when activating a control revealed nothing new.
 				speak(_("Nothing new appeared on the page"))
@@ -255,6 +257,8 @@ class ViewerServer:
 			try:
 				conn.settimeout(30)
 				method, path, body = self._read(conn)
+				# The path holds the session token, which stays out of the log.
+				log.debug("Viewer server: %s %s, %d bytes" % (method, path.rsplit("/", 1)[-1], len(body)))
 				status, contentType, payload = self._route(method, path, body)
 			except Exception:
 				log.debugWarning("Viewer server request failed", exc_info=True)
@@ -307,6 +311,14 @@ class ViewerServer:
 				speak(_("Expanding failed: {error}").format(error=e))
 				result = {"html": ""}
 			return "200 OK", "application/json; charset=utf-8", json.dumps(result).encode("utf-8")
+		if method == "POST" and path == "/%s/log" % self._token:
+			entry = json.loads(body.decode("utf-8") or "{}")
+			message = "Viewer: %s" % str(entry.get("message"))[:1000]
+			if entry.get("level") == "error":
+				log.error(message)
+			else:
+				log.info(message)
+			return "204 No Content", "text/plain", b""
 		if method == "POST" and path == "/%s/more" % self._token:
 			try:
 				result = self._onMore()

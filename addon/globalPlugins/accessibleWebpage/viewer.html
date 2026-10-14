@@ -40,12 +40,60 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 <button type="button" id="awp-close">{{CLOSE}}</button>
 </div>
 <script>
-// MSHTML caps HTML dialogs at IE8 document mode, whatever X-UA-Compatible says, so this script
-// sticks to what IE8 offers: attachEvent, no hasAttribute, and submit events that don't bubble.
+// MSHTML caps HTML dialogs at IE8 document mode or lower, whatever X-UA-Compatible says, so this
+// script sticks to what IE7 offers: attachEvent, no hasAttribute, no querySelectorAll or JSON, and
+// submit events that don't bubble.
 (function () {
 	var done = false, busy = false, liveCount = 0, partCount = 0;
 	var content = document.getElementById('awp-content');
 	var moreButton = document.getElementById('awp-more');
+
+	// IE7 mode has no JSON object. The server only ever sends json.dumps output, which is valid JavaScript.
+	var json = window.JSON || {
+		stringify: function stringify(v) {
+			if (v === null || v === undefined) { return 'null'; }
+			if (typeof v === 'boolean' || typeof v === 'number') { return String(v); }
+			if (typeof v === 'string') {
+				return '"' + v.replace(/[\\"\u0000-\u001f\u2028\u2029]/g, function (c) {
+					var map = { '"': '\\"', '\\': '\\\\', '\n': '\\n', '\r': '\\r', '\t': '\\t' };
+					return map[c] || '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
+				}) + '"';
+			}
+			var out = [], i, k;
+			if (v instanceof Array) {
+				for (i = 0; i < v.length; i++) { out.push(stringify(v[i])); }
+				return '[' + out.join(',') + ']';
+			}
+			for (k in v) {
+				if (v.hasOwnProperty(k)) { out.push(stringify(k) + ':' + stringify(v[k])); }
+			}
+			return '{' + out.join(',') + '}';
+		},
+		parse: function (text) { return (new Function('return (' + text + ');'))(); }
+	};
+
+	// Sends a message to NVDA's log, so problems inside the viewer can be diagnosed.
+	function report(level, message) {
+		try {
+			var xhr = new XMLHttpRequest();
+			xhr.open('POST', 'log', true);
+			xhr.setRequestHeader('Content-Type', 'application/json');
+			xhr.send(json.stringify({ level: level, message: String(message) }));
+		} catch (err) {}
+	}
+
+	window.onerror = function (message, url, line) {
+		report('error', message + ' (line ' + line + ')');
+	};
+
+	// querySelectorAll needs IE8 mode, so elements are found by walking the tree.
+	function findAll(root, test) {
+		var all = root.getElementsByTagName('*'), out = [];
+		for (var i = 0; i < all.length; i++) {
+			if (test(all[i])) { out.push(all[i]); }
+		}
+		return out;
+	}
 
 	function on(target, type, handler) {
 		if (target.addEventListener) {
@@ -87,7 +135,10 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 
 	function collect() {
 		var fields = [];
-		var els = content.querySelectorAll('input[data-ref], textarea[data-ref], select[data-ref]');
+		var els = findAll(content, function (n) {
+			var tag = lower(n.tagName);
+			return (tag === 'input' || tag === 'textarea' || tag === 'select') && n.getAttribute('data-ref');
+		});
 		for (var i = 0; i < els.length; i++) {
 			var el = els[i], ref = el.getAttribute('data-ref'), tag = lower(el.tagName);
 			if (el.disabled || isActivator(el)) { continue; }
@@ -113,21 +164,34 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 	function finish(result) {
 		if (done) { return; }
 		done = true;
-		window.returnValue = JSON.stringify(result);
+		window.returnValue = json.stringify(result);
 		window.close();
 	}
 
+	// Always calls callback exactly once, with the decoded answer or null, so no button stays busy.
 	function post(url, payload, callback) {
-		var xhr = new XMLHttpRequest();
-		xhr.open('POST', url, true);
-		xhr.setRequestHeader('Content-Type', 'application/json');
-		xhr.onreadystatechange = function () {
-			if (xhr.readyState !== 4) { return; }
-			var data = null;
-			try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
-			callback(data);
-		};
-		xhr.send(JSON.stringify(payload));
+		var answered = false;
+		function answer(data) {
+			if (!answered) {
+				answered = true;
+				callback(data);
+			}
+		}
+		try {
+			var xhr = new XMLHttpRequest();
+			xhr.open('POST', url, true);
+			xhr.setRequestHeader('Content-Type', 'application/json');
+			xhr.onreadystatechange = function () {
+				if (xhr.readyState !== 4) { return; }
+				var data = null;
+				try { data = json.parse(xhr.responseText); } catch (err) { report('error', url + ': bad answer, HTTP ' + xhr.status); }
+				answer(data);
+			};
+			xhr.send(json.stringify(payload));
+		} catch (err) {
+			report('error', url + ': ' + (err.message || err));
+			answer(null);
+		}
 	}
 
 	function initSelects(root) {
@@ -156,7 +220,7 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 		var open = has(panel, 'hidden');
 		var group = btn.getAttribute('data-toggle-group');
 		if (group && open) {
-			var others = content.querySelectorAll('[data-toggle-group]');
+			var others = findAll(content, function (n) { return n.getAttribute('data-toggle-group'); });
 			for (var i = 0; i < others.length; i++) {
 				if (others[i] !== btn && others[i].getAttribute('data-toggle-group') === group) { setOpen(others[i], false); }
 			}
@@ -165,7 +229,7 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 	}
 
 	function initToggles(root) {
-		var btns = root.querySelectorAll('[data-toggle]');
+		var btns = findAll(root, function (n) { return n.getAttribute('data-toggle'); });
 		for (var i = 0; i < btns.length; i++) {
 			var panel = document.getElementById(btns[i].getAttribute('data-toggle'));
 			if (panel) {
@@ -179,7 +243,9 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 	function onSubmit(e) {
 		prevent(e);
 		var form = targetOf(e);
-		var btn = form.querySelector('[type=submit][data-ref]');
+		var btn = findAll(form, function (n) {
+			return lower(n.getAttribute('type')) === 'submit' && n.getAttribute('data-ref');
+		})[0];
 		if (btn) {
 			finish({ action: 'click', ref: btn.getAttribute('data-ref'), fields: collect() });
 		} else {
@@ -248,6 +314,7 @@ table { border-collapse: collapse; } th, td { border: 1px solid #999; padding: .
 	}
 
 	initPart(content);
+	report('info', 'viewer ready, document mode ' + (document.documentMode || 'unknown') + ', JSON ' + (window.JSON ? 'native' : 'fallback'));
 
 	on(document, 'click', function (e) {
 		var target = targetOf(e);
