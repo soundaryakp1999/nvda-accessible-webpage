@@ -44,7 +44,7 @@ def _request(service, url, body=None, headers=None, timeout=120):
 def _errorMessage(httpError):
 	try:
 		error = json.loads(httpError.read().decode("utf-8"))["error"]
-		# Gemini: {"error": {"message": ...}}; Ollama: {"error": "..."}.
+		# Gemini, OpenAI: {"error": {"message": ...}}; Ollama: {"error": "..."}.
 		return error["message"] if isinstance(error, dict) else str(error)
 	except Exception:
 		return httpError.reason
@@ -75,6 +75,18 @@ def toJsonSchema(schema):
 			out[key] = toJsonSchema(value)
 		else:
 			out[key] = value
+	return out
+
+
+def toStrictJsonSchema(schema):
+	"""Standard JSON Schema in OpenAI's strict form: every property required, no extra properties."""
+	out = toJsonSchema(schema)
+	if out.get("type") == "object":
+		out["properties"] = {name: toStrictJsonSchema(sub) for name, sub in schema.get("properties", {}).items()}
+		out["required"] = list(out["properties"])
+		out["additionalProperties"] = False
+	if "items" in schema:
+		out["items"] = toStrictJsonSchema(schema["items"])
 	return out
 
 
@@ -114,6 +126,53 @@ class GeminiProvider:
 		if candidate.get("finishReason") == "MAX_TOKENS":
 			raise LLMError("The page is too large for the model's output limit. Try the goal-based rebuild instead.")
 		return _parseJson(text)
+
+
+class OpenAIProvider:
+	"""OpenAI's cloud API, using the Responses API with strict structured output."""
+
+	ENDPOINT = "https://api.openai.com/v1/responses"
+	SERVICE = "OpenAI"
+
+	def __init__(self, apiKey, model, timeout=120, reasoningEffort=None):
+		"""reasoningEffort: e.g. "none" or "low"; None for the model's default."""
+		self.apiKey = apiKey
+		self.model = model
+		self.timeout = timeout
+		self.reasoningEffort = reasoningEffort
+
+	def generateJson(self, system, user, schema):
+		body = {
+			"model": self.model,
+			"instructions": system,
+			"input": user,
+			"text": {
+				"format": {"type": "json_schema", "name": "response", "strict": True, "schema": toStrictJsonSchema(schema)},
+			},
+			# Page contents should not be kept on OpenAI's side.
+			"store": False,
+		}
+		# Reasoning models default to medium effort, which is much slower for this task.
+		if self.reasoningEffort:
+			body["reasoning"] = {"effort": self.reasoningEffort}
+		data = _request(self.SERVICE, self.ENDPOINT, body, {"Authorization": "Bearer %s" % self.apiKey}, self.timeout)
+		if data.get("status") == "incomplete":
+			reason = (data.get("incomplete_details") or {}).get("reason")
+			if reason == "max_output_tokens":
+				raise LLMError("The page is too large for the model's output limit. Try the goal-based rebuild instead.")
+			raise LLMError("OpenAI did not finish the answer: %s" % reason)
+		texts = []
+		for item in data.get("output") or []:
+			if item.get("type") != "message":
+				continue
+			for part in item.get("content") or []:
+				if part.get("type") == "refusal":
+					raise LLMError("OpenAI refused the request: %s" % part.get("refusal"))
+				if part.get("type") == "output_text":
+					texts.append(part.get("text") or "")
+		if not texts:
+			raise LLMError("OpenAI returned no answer")
+		return _parseJson("".join(texts))
 
 
 class OllamaProvider:

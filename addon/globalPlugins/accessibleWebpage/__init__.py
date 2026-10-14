@@ -1,6 +1,6 @@
 """Accessible Webpage: rebuilds inaccessible web pages with an LLM.
 
-Flow: snapshot the browse-mode buffer -> ask Gemini for accessible HTML ->
+Flow: snapshot the browse-mode buffer -> ask the LLM for accessible HTML ->
 show it in a modal viewer -> replay the user's interaction on the real page.
 """
 

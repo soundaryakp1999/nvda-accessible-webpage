@@ -17,6 +17,9 @@ CONF_SECTION = "accessibleWebpage"
 DEFAULT_MODEL = "gemini-3.8-flash"
 # Models Google has retired; saved configs using them are moved to DEFAULT_MODEL.
 RETIRED_MODELS = frozenset(("gemini-2.5-flash",))
+DEFAULT_OPENAI_MODEL = "gpt-6-luna"
+# The OpenAI key is only read from the environment, never stored in NVDA's configuration.
+OPENAI_KEY_VARIABLE = "OPENAI_API_KEY"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 # llama.cpp's llama-server default address.
 DEFAULT_SERVER_URL = "http://localhost:8080/v1"
@@ -27,9 +30,11 @@ LOCAL_INPUT_SHARE = 0.55
 LOCAL_INPUT_SHARE_THINKING = 0.35
 
 confspec = {
-	"provider": "option('gemini', 'ollama', 'server', default='gemini')",
+	"provider": "option('gemini', 'openai', 'ollama', 'server', default='gemini')",
 	"apiKey": "string(default='')",
 	"model": "string(default='%s')" % DEFAULT_MODEL,
+	"openaiModel": "string(default='%s')" % DEFAULT_OPENAI_MODEL,
+	"openaiReasoning": "option('none', 'low', 'medium', 'high', 'default', default='low')",
 	"ollamaUrl": "string(default='%s')" % DEFAULT_OLLAMA_URL,
 	"ollamaModel": "string(default='')",
 	"ollamaContextSize": "integer(default=32768, min=2048, max=1048576)",
@@ -48,6 +53,8 @@ PROVIDERS = (
 	# Translators: an LLM provider in the settings panel.
 	("gemini", _("Google Gemini (cloud)")),
 	# Translators: an LLM provider in the settings panel.
+	("openai", _("OpenAI (cloud)")),
+	# Translators: an LLM provider in the settings panel.
 	("ollama", _("Ollama (local or self-hosted)")),
 	# Translators: an LLM provider in the settings panel.
 	("server", _("OpenAI-compatible server (llama.cpp, LM Studio, Foundry Local)")),
@@ -59,6 +66,18 @@ THINKING_MODES = (
 	# Translators: a thinking mode for local models in the settings panel.
 	("on", _("On (much slower, may handle complex pages better; thinking models only)")),
 	# Translators: a thinking mode for local models in the settings panel.
+	("default", _("Model's default")),
+)
+REASONING_EFFORTS = (
+	# Translators: an OpenAI reasoning effort in the settings panel.
+	("none", _("None (fastest; not supported by every model)")),
+	# Translators: an OpenAI reasoning effort in the settings panel.
+	("low", _("Low (recommended)")),
+	# Translators: an OpenAI reasoning effort in the settings panel.
+	("medium", _("Medium (slower)")),
+	# Translators: an OpenAI reasoning effort in the settings panel.
+	("high", _("High (much slower)")),
+	# Translators: an OpenAI reasoning effort in the settings panel.
 	("default", _("Model's default")),
 )
 # Value of the providers' think parameter for each mode; None leaves it unset.
@@ -80,6 +99,10 @@ def getApiKey():
 	return conf()["apiKey"].strip() or os.environ.get("GEMINI_API_KEY", "").strip()
 
 
+def getOpenAIKey():
+	return os.environ.get(OPENAI_KEY_VARIABLE, "").strip()
+
+
 def makeProvider():
 	"""Returns (provider, None), or (None, message) when the provider is not configured."""
 	c = conf()
@@ -93,6 +116,21 @@ def makeProvider():
 			c["timeout"],
 			c["ollamaContextSize"],
 			THINK_PARAM[c["ollamaThinking"]],
+		)
+		return provider, None
+	if c["provider"] == "openai":
+		apiKey = getOpenAIKey()
+		if not apiKey:
+			return None, _(
+				# Translators: reported when the OpenAI key environment variable is missing; {name} is its name.
+				"No OpenAI API key. Set the {name} environment variable, then restart NVDA."
+			).format(name=OPENAI_KEY_VARIABLE)
+		effort = c["openaiReasoning"]
+		provider = llm.OpenAIProvider(
+			apiKey,
+			c["openaiModel"].strip() or DEFAULT_OPENAI_MODEL,
+			c["timeout"],
+			None if effort == "default" else effort,
 		)
 		return provider, None
 	if c["provider"] == "server":
@@ -116,6 +154,8 @@ def providerId():
 	c = conf()
 	if c["provider"] == "ollama":
 		return "ollama:%s:%s:%d:%s" % (c["ollamaUrl"], c["ollamaModel"], c["ollamaContextSize"], c["ollamaThinking"])
+	if c["provider"] == "openai":
+		return "openai:%s:%s" % (c["openaiModel"], c["openaiReasoning"])
 	if c["provider"] == "server":
 		return "server:%s:%s:%s" % (c["serverUrl"], c["serverModel"], c["serverThinking"])
 	return "gemini:%s" % c["model"]
@@ -167,6 +207,28 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		# Translators: label in the settings panel.
 		self.modelEdit = gemini.addLabeledControl(_("Gemini &model:"), wx.TextCtrl)
 		self.modelEdit.SetValue(c["model"])
+
+		# Translators: title of the OpenAI settings group.
+		openaiSizer = wx.StaticBoxSizer(wx.VERTICAL, self, label=_("OpenAI"))
+		self.openaiBox = openaiSizer.GetStaticBox()
+		openai = helper.addItem(guiHelper.BoxSizerHelper(self.openaiBox, sizer=openaiSizer))
+		if getOpenAIKey():
+			# Translators: shown in the settings panel; {name} is the environment variable.
+			keyStatus = _("The API key is read from the {name} environment variable, which is set.")
+		else:
+			# Translators: shown in the settings panel; {name} is the environment variable.
+			keyStatus = _("The API key is read from the {name} environment variable, which is not set. Set it, then restart NVDA.")
+		openai.addItem(wx.StaticText(self.openaiBox, label=keyStatus.format(name=OPENAI_KEY_VARIABLE)))
+		# Translators: label in the settings panel.
+		self.openaiModelEdit = openai.addLabeledControl(_("OpenAI mode&l:"), wx.TextCtrl)
+		self.openaiModelEdit.SetValue(c["openaiModel"])
+		self.openaiReasoningChoice = openai.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Rea&soning effort:"),
+			wx.Choice,
+			choices=[label for _key, label in REASONING_EFFORTS],
+		)
+		self.openaiReasoningChoice.SetSelection(_choiceIndex(REASONING_EFFORTS, c["openaiReasoning"]))
 
 		# Translators: title of the Ollama settings group.
 		ollamaSizer = wx.StaticBoxSizer(wx.VERTICAL, self, label=_("Ollama"))
@@ -293,6 +355,7 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 	def _updateEnabled(self):
 		selected = self._selectedProvider()
 		self.geminiBox.Enable(selected == "gemini")
+		self.openaiBox.Enable(selected == "openai")
 		self.ollamaBox.Enable(selected == "ollama")
 		self.serverBox.Enable(selected == "server")
 
@@ -331,6 +394,8 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		c["provider"] = self._selectedProvider()
 		c["apiKey"] = self.apiKeyEdit.GetValue().strip()
 		c["model"] = self.modelEdit.GetValue().strip() or DEFAULT_MODEL
+		c["openaiModel"] = self.openaiModelEdit.GetValue().strip() or DEFAULT_OPENAI_MODEL
+		c["openaiReasoning"] = REASONING_EFFORTS[self.openaiReasoningChoice.GetSelection()][0]
 		c["ollamaUrl"] = self.ollamaUrlEdit.GetValue().strip() or DEFAULT_OLLAMA_URL
 		c["ollamaModel"] = self.ollamaModelCombo.GetValue().strip()
 		c["ollamaContextSize"] = self.ollamaContextSpin.GetValue()

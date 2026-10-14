@@ -1,6 +1,6 @@
 # Accessible Webpage (NVDA add-on)
 
-Rebuilds an inaccessible web page as clean, accessible HTML using Google Gemini, then passes
+Rebuilds an inaccessible web page as clean, accessible HTML using Google Gemini, OpenAI or a local model, then passes
 whatever you do in that view back to the original page, the way the page expects.
 
 ## Usage
@@ -36,6 +36,17 @@ Open NVDA settings, go to the "Accessible Webpage" category, and choose an AI pr
 1. Get an API key from Google AI Studio.
 2. Enter the key in the settings. You can also set the `GEMINI_API_KEY` environment variable instead.
 3. You can change the model there too (default `gemini-3.8-flash`).
+
+**OpenAI (cloud)**
+
+1. Create an API key in the OpenAI platform dashboard.
+2. Set the `OPENAI_API_KEY` environment variable to the key, for example with
+   `setx OPENAI_API_KEY "sk-..."`, then restart NVDA so it sees the new variable. The key is only read
+   from the environment and never stored in NVDA's configuration.
+3. Choose OpenAI as the provider. The default model is `gpt-6-luna`, OpenAI's fastest and cheapest model.
+   For harder pages, try `gpt-6.1-sol`.
+4. Reasoning effort defaults to Low. None is fastest but not every model supports it (`gpt-6.1-sol`
+   doesn't); Medium and High are much slower.
 
 **OpenAI-compatible server (local, fastest on Snapdragon X / Windows on Arm)**
 
@@ -94,27 +105,28 @@ This produces `dist/accessibleWebpage-<version>.nvda-addon`. Open that file to i
    Long texts get an id (`t3`) that the model references instead of copying, so they appear word for word
    and cost no output tokens. Password contents are never sent.
 2. **Rebuild** ([llm.py](addon/globalPlugins/accessibleWebpage/llm.py), [prompt.py](addon/globalPlugins/accessibleWebpage/prompt.py)):
-   Gemini returns `{title, language, summary, html}` as structured JSON. Every control in the HTML has a
+   The model returns `{title, language, summary, html}` as structured JSON. Every control in the HTML has a
    `data-ref` pointing back to the original element.
 3. **Sanitize** ([sanitizer.py](addon/globalPlugins/accessibleWebpage/sanitizer.py)): an allowlist that
    strips scripts, event handlers and external resources, and removes any `data-ref` the model made up.
+   It also fills in what the model is told to leave out: referenced texts, `href`, button types,
+   `aria-required` and `aria-expanded`.
 4. **View** ([viewer.py](addon/globalPlugins/accessibleWebpage/viewer.py)): a modal MSHTML dialog, the same
    engine NVDA uses for browseable messages. The page's script returns your interaction as JSON.
    The page is served from a loopback server protected by a random token
    ([live.py](addon/globalPlugins/accessibleWebpage/live.py)), so it can ask NVDA to expand controls
    while the view stays open. After each expand, the add-on takes a new snapshot of the page and
-   sends only the new or changed lines to Gemini. Element IDs stay the same across snapshots, so
+   sends only the new or changed lines to the model. Element IDs stay the same across snapshots, so
    new fields and buttons still link to the real page.
 5. **Replay** ([actions.py](addon/globalPlugins/accessibleWebpage/actions.py)): brings the browser to the
    front, focuses each changed field, selects its contents and types the new value, so React and similar
    frameworks get real input events. It toggles checkboxes and radios, picks options, and then clicks the
    target using its accessibility action, falling back to a real mouse click.
-   It also fills in what the model is told to leave out: referenced texts, `href`, button types,
-   `aria-required` and `aria-expanded`.
 
 ## Privacy
 
-With Gemini, the page's text, structure and field values are sent to Google. Password values and URL query
+With Gemini or OpenAI, the page's text, structure and field values are sent to Google or OpenAI. OpenAI
+requests are made with `store: false`, so they are not kept as stored responses. Password values and URL query
 strings are never sent. For sensitive pages, use Ollama on your own computer so nothing leaves it.
 
 ## Limitations
