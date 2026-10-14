@@ -101,13 +101,17 @@ class SnapshotError(Exception):
 
 
 class RefInfo:
-	__slots__ = ("docHandle", "id", "role", "name")
+	__slots__ = ("docHandle", "id", "role", "name", "key", "index")
 
-	def __init__(self, docHandle, id, role, name):
+	def __init__(self, docHandle, id, role, name, key, index):
 		self.docHandle = docHandle
 		self.id = id
 		self.role = role
 		self.name = name
+		# Role, name and text, plus how many elements with the same key come before it on the page:
+		# finds the element again when the browser gives it a new ID.
+		self.key = key
+		self.index = index
 
 
 class RefRegistry:
@@ -119,13 +123,13 @@ class RefRegistry:
 		self.texts = {}
 		self._textIds = {}
 
-	def refFor(self, docHandle, controlId, role, name):
-		key = (docHandle, controlId)
-		ref = self._byIdentifier.get(key)
+	def refFor(self, docHandle, controlId, role, name, key, index):
+		identifier = (docHandle, controlId)
+		ref = self._byIdentifier.get(identifier)
 		if ref is None:
 			ref = "e%d" % (len(self._byIdentifier) + 1)
-			self._byIdentifier[key] = ref
-		self.refs[ref] = RefInfo(docHandle, controlId, role, name)
+			self._byIdentifier[identifier] = ref
+		self.refs[ref] = RefInfo(docHandle, controlId, role, name, key, index)
 		return ref
 
 	def textIdFor(self, text):
@@ -159,11 +163,25 @@ class Snapshot:
 		return self.registry.texts
 
 	def resolve(self, ref):
-		"""Returns the live NVDAObject for a ref, or None if it no longer exists."""
+		"""Returns the live NVDAObject for a ref, or None if it no longer exists. Call on the main thread."""
 		info = self.refs.get(ref)
 		if info is None:
 			log.debugWarning("Unknown ref %s" % ref)
 			return None
+		oldIds = (info.docHandle, info.id)
+		obj = self._lookup(ref, info)
+		if obj is None and self._remap():
+			if (info.docHandle, info.id) != oldIds:
+				log.debug("%s moved from %s to %s" % (ref, oldIds, (info.docHandle, info.id)))
+				obj = self._lookup(ref, info)
+		if obj is None:
+			log.debugWarning(
+				"Could not resolve %s (window %s, id %s, buffer alive %s)"
+				% (ref, info.docHandle, info.id, getattr(self.treeInterceptor, "isAlive", "?"))
+			)
+		return obj
+
+	def _lookup(self, ref, info):
 		obj = None
 		try:
 			obj = self.treeInterceptor.getNVDAObjectFromIdentifier(info.docHandle, info.id)
@@ -176,12 +194,28 @@ class Snapshot:
 				obj = getNVDAObjectFromEvent(info.docHandle, winUser.OBJID_CLIENT, info.id)
 			except Exception:
 				log.debugWarning("Window lookup of %s failed" % ref, exc_info=True)
-		if obj is None:
-			log.debugWarning(
-				"Could not resolve %s (window %s, id %s, buffer alive %s)"
-				% (ref, info.docHandle, info.id, getattr(self.treeInterceptor, "isAlive", "?"))
-			)
 		return obj
+
+	def _remap(self):
+		"""Browsers can recreate a page's accessibility objects, giving the same elements new IDs.
+		Finds every known element again in a fresh snapshot by its key and position among look-alikes,
+		and points its ref at the new IDs. Returns how many refs changed."""
+		try:
+			fresh = take(self.treeInterceptor, self.maxChars)
+		except Exception:
+			log.debugWarning("Fresh snapshot for remapping failed", exc_info=True)
+			return 0
+		current = {(i.key, i.index): (i.docHandle, i.id) for i in fresh.refs.values()}
+		changed = 0
+		for ref, info in self.refs.items():
+			ids = current.get((info.key, info.index))
+			if ids and ids != (info.docHandle, info.id):
+				info.docHandle, info.id = ids
+				# Later snapshots of this page then keep using the same ref for the element.
+				self.registry._byIdentifier[ids] = ref
+				changed += 1
+		log.debug("Remapped %d of %d refs from a fresh snapshot" % (changed, len(self.refs)))
+		return changed
 
 
 class _Node:
@@ -234,6 +268,7 @@ class _Serializer:
 		self.size = 0
 		self.hasRefs = False
 		self.truncated = False
+		self.keyCounts = {}
 
 	def add(self, line):
 		# No indentation: closing tags already carry the structure, and indents cost tokens.
@@ -277,7 +312,10 @@ class _Serializer:
 			docHandle = field.get("controlIdentifier_docHandle")
 			controlId = field.get("controlIdentifier_ID")
 			if docHandle is not None and controlId is not None:
-				ref = self.registry.refFor(docHandle, controlId, role, name)
+				key = self._key(node, role, name, states)
+				index = self.keyCounts.get(key, 0)
+				self.keyCounts[key] = index + 1
+				ref = self.registry.refFor(docHandle, controlId, role, name, key, index)
 				self.hasRefs = True
 
 		if not ref and not name and not landmark and role in COLLAPSIBLE_ROLES:
@@ -301,6 +339,12 @@ class _Serializer:
 			self.add("<%s%s>" % (tag, attrs))
 			self.children(node)
 			self.add("</%s>" % tag)
+
+	@staticmethod
+	def _key(node, role, name, states):
+		"""What identifies an element apart from its browser ID: role, name and direct text."""
+		text = "" if State.PROTECTED in states else _clean(" ".join(k for k in node.children if isinstance(k, str)))
+		return (role, name, text[:100])
 
 	@staticmethod
 	def _isTarget(role, states):
