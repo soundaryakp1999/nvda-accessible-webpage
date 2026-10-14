@@ -124,7 +124,7 @@ class LiveSession:
 				)
 			if self.closed:
 				return {"html": ""}
-			html = sanitizer.sanitize(result.get("html", ""), newSnap.refs.keys())
+			html = sanitizer.sanitize(result.get("html", ""), newSnap.refs.keys(), newSnap.texts)
 			# Translators: default announcement after content was expanded.
 			speak(result.get("announcement") or _("Expanded"))
 			return {"html": html}

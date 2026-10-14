@@ -147,7 +147,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._show(snap, result)
 
 	def _show(self, snap, result):
-		content = sanitizer.sanitize(result.get("html", ""), snap.refs.keys())
+		content = sanitizer.sanitize(result.get("html", ""), snap.refs.keys(), snap.texts)
 		title = result.get("title") or snap.title or _("Accessible Webpage")
 		page = viewer.renderPage(title, result.get("summary", ""), result.get("language"), content)
 		provider, _error = settings.makeProvider()

@@ -88,8 +88,11 @@ This produces `dist/accessibleWebpage-<version>.nvda-addon`. Open that file to i
 
 1. **Snapshot** ([snapshot.py](addon/globalPlugins/accessibleWebpage/snapshot.py)): walks NVDA's browse-mode
    buffer and writes compact pseudo-HTML. It includes roles, names, states and the source tag, id and class,
-   which is how the model spots a `div` that is really a button. Each element you can interact with gets a
-   ref (`e12`) that maps to the NVDA identifier of the live element. Password contents are never sent.
+   which is how the model spots a `div` that is really a button. Hints that only restate the role, generated
+   ids and purely visual classes (Tailwind and Bootstrap utilities, CSS-in-JS hashes) are left out. Each
+   element you can interact with gets a ref (`e12`) that maps to the NVDA identifier of the live element.
+   Long texts get an id (`t3`) that the model references instead of copying, so they appear word for word
+   and cost no output tokens. Password contents are never sent.
 2. **Rebuild** ([llm.py](addon/globalPlugins/accessibleWebpage/llm.py), [prompt.py](addon/globalPlugins/accessibleWebpage/prompt.py)):
    Gemini returns `{title, language, summary, html}` as structured JSON. Every control in the HTML has a
    `data-ref` pointing back to the original element.
@@ -106,6 +109,8 @@ This produces `dist/accessibleWebpage-<version>.nvda-addon`. Open that file to i
    front, focuses each changed field, selects its contents and types the new value, so React and similar
    frameworks get real input events. It toggles checkboxes and radios, picks options, and then clicks the
    target using its accessibility action, falling back to a real mouse click.
+   It also fills in what the model is told to leave out: referenced texts, `href`, button types,
+   `aria-required` and `aria-expanded`.
 
 ## Privacy
 

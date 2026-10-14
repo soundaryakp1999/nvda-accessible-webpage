@@ -6,6 +6,8 @@ see, and every control field carries an identifier that can be turned back into
 a live NVDAObject when we need to act on the original page.
 """
 
+import re
+
 import addonHandler
 import controlTypes
 import textInfos
@@ -41,8 +43,9 @@ REPORTED_STATES = _members(
 	State,
 	"CLICKABLE", "CHECKED", "HALFCHECKED", "PRESSED", "SELECTED", "EXPANDED", "COLLAPSED",
 	"REQUIRED", "INVALID_ENTRY", "READONLY", "UNAVAILABLE", "PROTECTED", "MULTILINE",
-	"HASPOPUP", "VISITED", "EDITABLE", "CURRENT",
+	"HASPOPUP", "EDITABLE", "CURRENT",
 )
+TEXT_ROLES = _members(Role, "EDITABLETEXT", "PASSWORDEDIT")
 TAG_FOR_ROLE = {
 	getattr(Role, k): v
 	for k, v in {
@@ -53,7 +56,44 @@ TAG_FOR_ROLE = {
 	}.items()
 	if hasattr(Role, k)
 }
+# Tag and ARIA role hints that only restate the role, so they reveal nothing about fake controls.
+NATIVE_HINTS = {
+	getattr(Role, k): frozenset(v)
+	for k, v in {
+		"BUTTON": ("button",), "TOGGLEBUTTON": ("button",), "MENUBUTTON": ("button",), "LINK": ("a", "link"),
+		"EDITABLETEXT": ("input", "textarea", "textbox"), "PASSWORDEDIT": ("input", "textbox"),
+		"CHECKBOX": ("input", "checkbox"), "RADIOBUTTON": ("input", "radio"), "COMBOBOX": ("select", "combobox"),
+		"SLIDER": ("input", "slider"), "SPINBUTTON": ("input", "spinbutton"), "SWITCH": ("switch",),
+		"TAB": ("tab",), "MENUITEM": ("menuitem",), "CHECKMENUITEM": ("menuitemcheckbox",),
+		"RADIOMENUITEM": ("menuitemradio",), "TREEVIEWITEM": ("treeitem",), "LISTITEM": ("li", "listitem"),
+	}.items()
+	if hasattr(Role, k)
+}
 MAX_ATTR_LEN = 200
+# Long texts get an id, so the model can reference them instead of copying them into its output.
+TEXT_ID_MIN = 60
+# Class tokens that only describe looks (Tailwind, Bootstrap utilities) or are generated hashes.
+_UTILITY_CLASS = re.compile(
+	r"[\w-]*[:\[].*"  # Variants and arbitrary values: md:flex, hover:bg-blue-500, w-[30px]
+	# Spacing, size and position only with a value, so p-button (PrimeNG) or right-arrow stay.
+	r"|-?(?:[pm][xytrblse]?|w|h|min-w|min-h|max-w|max-h|size|gap(?:-[xy])?|space-[xy]|inset(?:-[xy])?|top|right"
+	r"|bottom|left|z|order|col|col-span|col-start|col-end|row-span|grid-cols|grid-rows|basis|translate-[xy])"
+	r"(?:-[a-z]+)?-(?:\d[\w./%]*|auto|px|full|screen|min|max|fit|none|xs|sm|md|lg|\d?xl|xxl)"
+	r"|-?(?:flex|items|justify|self|place-[a-z]+|align|text|bg|font|leading|tracking|border|rounded|shadow|ring"
+	r"|outline|opacity|overflow|cursor|transition|duration|ease|delay|rotate|scale|fill|stroke|object|aspect|d"
+	r"|float|line-clamp|decoration)-[a-z0-9./%-]+"
+	r"|flex|grid|block|inline|inline-block|inline-flex|relative|absolute|fixed|sticky|static|truncate|uppercase"
+	r"|lowercase|capitalize|italic|underline|rounded|shadow|border|container|row|clearfix|visible|invisible|transition"
+)
+_GENERATED_CLASS = re.compile(
+	r"(?:css|jsx|svelte|emotion)-[a-z0-9]+|sc-[A-Za-z]+|ember\d+|ng-(?:tns|star-inserted|untouched|pristine|touched|dirty)[\w-]*"
+)
+# CSS modules: Button_root__1a2B3 -> Button_root.
+_CSS_MODULE = re.compile(r"([A-Za-z][\w-]*_[A-Za-z][\w-]*)__([\w-]{5})")
+_GENERATED_ID = re.compile(
+	r".*[:«»].*|(?=.*\d)[0-9a-f-]{16,}|(?:react|radix|headlessui|mui|downshift|rc|yui|uid|ui-id)[-_].*\d.*|ember\d+",
+	re.IGNORECASE,
+)
 
 
 class SnapshotError(Exception):
@@ -76,6 +116,8 @@ class RefRegistry:
 	def __init__(self):
 		self.refs = {}
 		self._byIdentifier = {}
+		self.texts = {}
+		self._textIds = {}
 
 	def refFor(self, docHandle, controlId, role, name):
 		key = (docHandle, controlId)
@@ -85,6 +127,15 @@ class RefRegistry:
 			self._byIdentifier[key] = ref
 		self.refs[ref] = RefInfo(docHandle, controlId, role, name)
 		return ref
+
+	def textIdFor(self, text):
+		"""Keyed by content, so ids stay stable when live expands re-snapshot the page."""
+		tid = self._textIds.get(text)
+		if tid is None:
+			tid = "t%d" % (len(self._textIds) + 1)
+			self._textIds[text] = tid
+			self.texts[tid] = text
+		return tid
 
 
 class Snapshot:
@@ -100,6 +151,10 @@ class Snapshot:
 	@property
 	def refs(self):
 		return self.registry.refs
+
+	@property
+	def texts(self):
+		return self.registry.texts
 
 	def resolve(self, ref):
 		"""Returns the live NVDAObject for a ref, or None if it no longer exists."""
@@ -164,33 +219,35 @@ class _Serializer:
 		self.hasRefs = False
 		self.truncated = False
 
-	def add(self, depth, text):
+	def add(self, line):
+		# No indentation: closing tags already carry the structure, and indents cost tokens.
 		if self.truncated:
 			return
-		line = " " * min(depth, 30) + text
 		self.size += len(line) + 1
 		if self.size > self.maxChars:
 			self.truncated = True
 			return
 		self.lines.append(line)
 
-	def children(self, node, depth):
+	def children(self, node):
 		buf = []
 		for child in node.children:
 			if isinstance(child, str):
 				buf.append(child)
 				continue
-			self._flushText(buf, depth)
-			self.node(child, depth)
-		self._flushText(buf, depth)
+			self._flushText(buf)
+			self.node(child)
+		self._flushText(buf)
 
-	def _flushText(self, buf, depth):
+	def _flushText(self, buf):
 		text = _clean(" ".join(buf))
 		buf.clear()
-		if text:
-			self.add(depth, _esc(text))
+		if len(text) >= TEXT_ID_MIN:
+			self.add('<text tid="%s">%s</text>' % (self.registry.textIdFor(text), _esc(text)))
+		elif text:
+			self.add(_esc(text))
 
-	def node(self, node, depth):
+	def node(self, node):
 		if self.truncated:
 			return
 		field = node.field
@@ -208,7 +265,7 @@ class _Serializer:
 				self.hasRefs = True
 
 		if not ref and not name and not landmark and role in COLLAPSIBLE_ROLES:
-			self.children(node, depth)
+			self.children(node)
 			return
 
 		protected = State.PROTECTED in states
@@ -220,13 +277,14 @@ class _Serializer:
 
 		if all(isinstance(k, str) for k in kids):
 			text = _clean(" ".join(kids))
-			attrs = self._attrs(field, role, states, ref, name if name != text else "", landmark, protected, bool(text))
-			self.add(depth, "<%s%s>%s</%s>" % (tag, attrs, _esc(text), tag))
+			tid = self.registry.textIdFor(text) if len(text) >= TEXT_ID_MIN else None
+			attrs = self._attrs(field, role, states, ref, tid, name if name != text else "", landmark, protected, bool(text))
+			self.add("<%s%s>%s</%s>" % (tag, attrs, _esc(text), tag))
 		else:
-			attrs = self._attrs(field, role, states, ref, name, landmark, protected, True)
-			self.add(depth, "<%s%s>" % (tag, attrs))
-			self.children(node, depth + 1)
-			self.add(depth, "</%s>" % tag)
+			attrs = self._attrs(field, role, states, ref, None, name, landmark, protected, True)
+			self.add("<%s%s>" % (tag, attrs))
+			self.children(node)
+			self.add("</%s>" % tag)
 
 	@staticmethod
 	def _isTarget(role, states):
@@ -235,10 +293,19 @@ class _Serializer:
 		return role in INTERACTIVE_ROLES or bool(states & INTERACTIVE_STATES)
 
 	@staticmethod
-	def _attrs(field, role, states, ref, name, landmark, protected, hasText):
+	def _implied(role, state):
+		"""States the role already says."""
+		if state == State.CLICKABLE:
+			return role in INTERACTIVE_ROLES
+		return state == State.EDITABLE and role in TEXT_ROLES
+
+	@classmethod
+	def _attrs(cls, field, role, states, ref, tid, name, landmark, protected, hasText):
 		attrs = []
 		if ref:
 			attrs.append(("ref", ref))
+		if tid:
+			attrs.append(("tid", tid))
 		if name:
 			attrs.append(("name", name))
 		value = field.get("value")
@@ -246,6 +313,7 @@ class _Serializer:
 			attrs.append(("value", value))
 		if protected and hasText:
 			attrs.append(("value", "[password entered, hidden]"))
+		fieldName = _clean(field.get("name"))
 		for key, attr in (
 			("description", "description"),
 			("placeholder", "placeholder"),
@@ -253,28 +321,67 @@ class _Serializer:
 			("keyboardShortcut", "shortcut"),
 		):
 			v = field.get(key)
-			if v and not any(a == attr for a, _v in attrs):
+			if v and not any(a == attr for a, _v in attrs) and not (attr == "description" and _clean(v) == fieldName):
 				attrs.append((attr, v))
 		if landmark:
 			attrs.append(("landmark", landmark))
-		reported = sorted(s.name.lower() for s in states if s in REPORTED_STATES)
+		reported = sorted(s.name.lower() for s in states if s in REPORTED_STATES and not cls._implied(role, s))
 		if reported:
 			attrs.append(("states", ",".join(reported)))
 		# Source hints are what reveal fake controls such as <div class="btn">.
 		if ref or role in COLLAPSIBLE_ROLES:
+			native = NATIVE_HINTS.get(role, frozenset())
 			for key, attr in (
 				("IAccessible2::attribute_tag", "tag"),
 				("IAccessible2::attribute_xml-roles", "aria-role"),
 			):
-				v = field.get(key)
-				if v:
+				v = _clean(field.get(key)).lower()
+				if v and v not in native and v != landmark:
 					attrs.append((attr, v))
 		if ref:
-			for key, attr in (("IAccessible2::attribute_id", "id"), ("IAccessible2::attribute_class", "class")):
-				v = field.get(key)
-				if v:
-					attrs.append((attr, v))
+			v = _clean(field.get("IAccessible2::attribute_id"))
+			if v and not _GENERATED_ID.fullmatch(v):
+				attrs.append(("id", v))
+			v = _classHint(field.get("IAccessible2::attribute_class"))
+			if v:
+				attrs.append(("class", v))
 		return "".join(' %s="%s"' % (a, _attrEsc(v)) for a, v in attrs)
+
+
+def _classHint(value):
+	"""Keeps the class tokens that can say what a control is, e.g. btn or icon-search."""
+	tokens = []
+	for token in _clean(value).split():
+		module = _CSS_MODULE.fullmatch(token)
+		if module and any(c.isdigit() for c in module.group(2)):
+			token = module.group(1)
+		elif _UTILITY_CLASS.fullmatch(token) or _GENERATED_CLASS.fullmatch(token):
+			continue
+		if token not in tokens:
+			tokens.append(token)
+	return " ".join(tokens)
+
+
+_OPEN_LINE = re.compile(r"<(\w+)(?: [^<>]*)?>")
+_CLOSE_LINE = re.compile(r"</(\w+)>")
+
+
+def _joinWrappers(lines):
+	"""Puts an element with a single child on one line: <li>, <a>x</a>, </li> -> <li><a>x</a></li>."""
+	out = []
+	for line in lines:
+		close = _CLOSE_LINE.fullmatch(line)
+		if close and len(out) >= 2:
+			opened = _OPEN_LINE.fullmatch(out[-2])
+			child = out[-1]
+			if (
+				opened and opened.group(1) == close.group(1)
+				and not _OPEN_LINE.fullmatch(child) and not _CLOSE_LINE.fullmatch(child)
+			):
+				out[-2:] = [out[-2] + child + line]
+				continue
+		out.append(line)
+	return out
 
 
 def take(treeInterceptor, maxChars, registry=None):
@@ -284,11 +391,11 @@ def take(treeInterceptor, maxChars, registry=None):
 		raise SnapshotError(_("The page is still loading. Try again in a moment."))
 	root = _buildTree(treeInterceptor)
 	serializer = _Serializer(maxChars, registry or RefRegistry())
-	serializer.children(root, 0)
+	serializer.children(root)
 	if not serializer.hasRefs and not serializer.lines:
 		# Translators: reported when nothing could be read from the page.
 		raise SnapshotError(_("Could not read any content from this page."))
-	text = "\n".join(serializer.lines)
+	text = "\n".join(_joinWrappers(serializer.lines))
 	if serializer.truncated:
 		text += "\n<!-- snapshot truncated: the page is longer than the configured limit -->"
 

@@ -3,6 +3,10 @@
 The model's HTML is untrusted: it is rendered by MSHTML inside NVDA's process,
 so scripts, event handlers, external resources and navigation are stripped, and
 data-ref values that do not exist in the snapshot are dropped.
+
+It also fills in what the model is told to leave out, to save output tokens:
+href and button types, aria-required, aria-expanded on live expanders, and the
+original text of elements that reference a long snapshot text with data-text.
 """
 
 import re
@@ -51,9 +55,10 @@ INPUT_TYPES = frozenset((
 
 
 class _Sanitizer(HTMLParser):
-	def __init__(self, validRefs):
+	def __init__(self, validRefs, texts):
 		super().__init__(convert_charrefs=True)
 		self.validRefs = validRefs
+		self.texts = texts
 		self.out = []
 		self.stack = []
 		self.skip = 0
@@ -86,6 +91,9 @@ class _Sanitizer(HTMLParser):
 			' %s' % k if v is None else ' %s="%s"' % (k, escape(v, quote=True)) for k, v in clean
 		)))
 		if tag not in VOID_TAGS:
+			text = self.texts.get(dict(attrs).get("data-text"))
+			if text:
+				self.out.append(escape(text, quote=False))
 			if selfClosing:
 				self.out.append("</%s>" % tag)
 			else:
@@ -128,6 +136,10 @@ class _Sanitizer(HTMLParser):
 			clean.append(("href", "#"))
 		if tag == "button" and "type" not in seen:
 			clean.append(("type", "button"))
+		if "required" in seen and "aria-required" not in seen:
+			clean.append(("aria-required", "true"))
+		if "aria-expanded" not in seen and any(k == "data-expand" for k, _v in clean):
+			clean.append(("aria-expanded", "false"))
 		return clean
 
 	def handle_endtag(self, tag):
@@ -157,7 +169,8 @@ class _Sanitizer(HTMLParser):
 		return "".join(self.out)
 
 
-def sanitize(html, validRefs):
-	parser = _Sanitizer(frozenset(validRefs))
+def sanitize(html, validRefs, texts=None):
+	"""texts: the snapshot's long texts by id, for data-text."""
+	parser = _Sanitizer(frozenset(validRefs), texts or {})
 	parser.feed(html or "")
 	return parser.result()
