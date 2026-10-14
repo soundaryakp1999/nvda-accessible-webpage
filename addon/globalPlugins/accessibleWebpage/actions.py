@@ -235,6 +235,7 @@ def _select(snapshot, obj, field, clickMethod):
 
 
 def _click(obj, clickMethod):
+	log.debug("Clicking %s %r with %s" % (getattr(obj.role, "name", obj.role), obj.name, clickMethod))
 	if clickMethod == "action":
 		try:
 			obj.doAction()
@@ -256,7 +257,14 @@ def _mouseClick(obj):
 	if not location or location.width <= 0 or location.height <= 0:
 		log.debugWarning("Cannot mouse-click object without a location: %r" % obj)
 		return
-	winUser.setCursorPos(location.left + location.width // 2, location.top + location.height // 2)
+	x, y = location.left + location.width // 2, location.top + location.height // 2
+	try:
+		# What is under the point shows whether the click lands on the element or on something covering it.
+		hit = api.getDesktopObject().objectFromPoint(x, y)
+		log.debug("Mouse click at %d,%d on %s %r" % (x, y, getattr(getattr(hit, "role", None), "name", None), getattr(hit, "name", None)))
+	except Exception:
+		log.debugWarning("Could not tell what is at %d,%d" % (x, y), exc_info=True)
+	winUser.setCursorPos(x, y)
 	try:
 		import mouseHandler
 		mouseHandler.doPrimaryClick()
