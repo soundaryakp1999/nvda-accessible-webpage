@@ -9,6 +9,7 @@ whatever you do in that view back to the original page, the way the page expects
 | --- | --- |
 | NVDA+shift+c | Rebuild the current page |
 | NVDA+shift+control+c | Ask "what do you want to do?" first, then rebuild around that goal |
+| NVDA+shift+alt+c | Show the page as a tree of its sections and controls |
 
 Both gestures can be changed in NVDA's Input Gestures dialog, in the "Accessible Webpage" category.
 
@@ -31,6 +32,17 @@ In the rebuilt view:
 - Escape closes the view without doing anything.
 
 If the page changes after you act (a new step, an error message), press NVDA+shift+c again.
+
+In the page tree (NVDA+shift+alt+c):
+
+- The model groups the page into sections (navigation, the feed, each post, the footer) and labels every
+  control. Expand and collapse sections with the arrow keys, like any tree view.
+- Enter on a control closes the tree and puts NVDA's browse mode cursor on that element in the real page.
+  Press Enter there to activate it. The add-on never clicks for you, so it works on pages where clicking
+  from outside fails.
+- "Load more" adds the next part of a long page to the tree.
+- It is much faster and cheaper than the rebuilt view, because the model writes short labels instead of a
+  whole page.
 
 ## Setup
 

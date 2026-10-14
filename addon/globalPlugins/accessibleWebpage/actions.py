@@ -7,6 +7,10 @@ action (or a real mouse click as fallback) so the page's handlers fire.
 
 Steps run as a generator driven by core.callLater, so NVDA stays responsive
 and the browser has time to react between steps.
+
+moveTo instead puts NVDA's browse mode cursor on an element, using only the
+browse mode buffer. It works even when the element can't be retrieved as an
+object, and the user then activates it with NVDA's own Enter.
 """
 
 import addonHandler
@@ -14,10 +18,16 @@ import api
 import brailleInput
 import controlTypes
 import core
+import speech
+import textInfos
+from textInfos.offsets import Offsets
 import ui
 import winUser
 from keyboardHandler import KeyboardInputGesture
 from logHandler import log
+from virtualBuffers import VirtualBuffer
+
+from . import snapshot as snapshotModule
 
 addonHandler.initTranslation()
 
@@ -27,6 +37,80 @@ State = controlTypes.State
 
 def perform(snapshot, response, clickMethod):
 	_run(_steps(snapshot, response, clickMethod))
+
+
+def moveTo(snapshot, ref):
+	"""Brings the page to the front and puts the browse mode cursor on the element for ref."""
+	_run(_moveSteps(snapshot, ref))
+
+
+def _moveSteps(snap, ref):
+	if snap.hwnd and winUser.getForegroundWindow() != snap.hwnd:
+		winUser.setForegroundWindow(snap.hwnd)
+	yield 500
+	if not _moveCaret(snap, ref):
+		# Translators: reported when the chosen element could not be found on the original page.
+		ui.message(_("Could not find that element on the page. Rebuild the page and try again."))
+
+
+def _currentTreeInterceptor(snap):
+	"""The browse mode document for the page: the focused one if it shows the same address,
+	since NVDA may have replaced the snapshot's, otherwise the snapshot's own."""
+	ti = getattr(api.getFocusObject(), "treeInterceptor", None)
+	if isinstance(ti, VirtualBuffer) and ti is not snap.treeInterceptor:
+		url = (getattr(ti, "documentConstantIdentifier", None) or "").split("?", 1)[0].split("#", 1)[0]
+		if url == snap.url:
+			log.debug("Using the focused browse mode document instead of the snapshot's")
+			return ti
+	if snap.treeInterceptor.isAlive:
+		return snap.treeInterceptor
+	return ti if isinstance(ti, VirtualBuffer) else None
+
+
+def _findOffsets(snap, ti, ref):
+	info = snap.refs.get(ref)
+	if info is None:
+		return None
+	try:
+		return ti._getOffsetsFromFieldIdentifier(info.docHandle, info.id)
+	except Exception:
+		log.debug("%s is not at its old place in the buffer, looking it up by key" % ref)
+	# Another buffer or new IDs: find the same element by its key and position among look-alikes.
+	try:
+		fresh = snapshotModule.take(ti, snap.maxChars)
+	except Exception:
+		log.debugWarning("Snapshot for finding %s failed" % ref, exc_info=True)
+		return None
+	for candidate in fresh.refs.values():
+		if candidate.key == info.key and candidate.index == info.index:
+			try:
+				return ti._getOffsetsFromFieldIdentifier(candidate.docHandle, candidate.id)
+			except Exception:
+				log.debugWarning("Found %s by key but not in the buffer" % ref, exc_info=True)
+				return None
+	log.debugWarning("No element matches %s any more" % ref)
+	return None
+
+
+def _moveCaret(snap, ref):
+	"""Puts the browse mode cursor on the element for ref and reads it, like quick navigation does."""
+	ti = _currentTreeInterceptor(snap)
+	if ti is None:
+		return False
+	offsets = _findOffsets(snap, ti, ref)
+	if offsets is None:
+		return False
+	info = ti.makeTextInfo(Offsets(offsets[0], offsets[0]))
+	reason = controlTypes.OutputReason.QUICKNAV
+	try:
+		ti._set_selection(info, reason=reason)
+	except TypeError:
+		ti.selection = info
+	info.expand(textInfos.UNIT_LINE)
+	speech.cancelSpeech()
+	speech.speakTextInfo(info, unit=textInfos.UNIT_LINE, reason=reason)
+	log.debug("Moved the browse mode cursor to %s at offset %d" % (ref, offsets[0]))
+	return True
 
 
 def _run(gen):
@@ -72,8 +156,13 @@ def _steps(snapshot, response, clickMethod):
 	if action == "click":
 		target = snapshot.resolve(response.get("ref"))
 		if target is None:
-			# Translators: reported when the element to click no longer exists on the page.
-			ui.message(_("That element is no longer on the page. Rebuild the page and try again."))
+			# The element can't be retrieved as an object, but browse mode can still reach it.
+			if _moveCaret(snapshot, response.get("ref")):
+				# Translators: reported when the add-on could not click an element and moved to it instead.
+				ui.message(_("Could not activate it from here. The cursor is on it: press Enter."))
+			else:
+				# Translators: reported when the element to click no longer exists on the page.
+				ui.message(_("That element is no longer on the page. Rebuild the page and try again."))
 			return
 		yield from _click(target, clickMethod)
 	elif fields:
