@@ -194,7 +194,33 @@ class Snapshot:
 				obj = getNVDAObjectFromEvent(info.docHandle, winUser.OBJID_CLIENT, info.id)
 			except Exception:
 				log.debugWarning("Window lookup of %s failed" % ref, exc_info=True)
+		if obj is None:
+			obj = self._directLookup(ref, info)
 		return obj
+
+	def _directLookup(self, ref, info):
+		"""Gets the element from the document's own IAccessible and builds the NVDAObject without
+		letting NVDA pick another API for it, logging each step: the regular lookups were seen to
+		return None with no error for elements that were still on the page."""
+		try:
+			from NVDAObjects.IAccessible import IAccessible
+			import IAccessibleHandler
+			root = self.treeInterceptor.rootNVDAObject
+			log.debug(
+				"Direct lookup of %s: root %r, root window %s, document window %s is window %s"
+				% (ref, root, root.windowHandle, info.docHandle, winUser.isWindow(info.docHandle))
+			)
+			pacc = root.IAccessibleObject.accChild(info.id)
+			log.debug("accChild(%s) gave %r" % (info.id, pacc))
+			pacc = IAccessibleHandler.normalizeIAccessible(pacc)
+			obj = IAccessible(
+				chooseBestAPI=False, windowHandle=root.windowHandle, IAccessibleObject=pacc, IAccessibleChildID=0
+			)
+			log.debug("Direct lookup of %s gave %r" % (ref, obj))
+			return obj
+		except Exception:
+			log.debugWarning("Direct lookup of %s failed" % ref, exc_info=True)
+			return None
 
 	def _remap(self):
 		"""Browsers can recreate a page's accessibility objects, giving the same elements new IDs.
