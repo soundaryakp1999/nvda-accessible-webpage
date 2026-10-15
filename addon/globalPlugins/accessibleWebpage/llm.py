@@ -6,8 +6,11 @@ providers that expect standard JSON Schema convert them with toJsonSchema.
 
 import json
 import ssl
+import time
 import urllib.error
 import urllib.request
+
+from logHandler import log
 
 SETTINGS_HINT = "Check the settings in NVDA settings, Accessible Webpage category."
 
@@ -39,6 +42,16 @@ def _request(service, url, body=None, headers=None, timeout=120):
 		raise LLMError("%s did not answer within %d seconds" % (service, timeout))
 	except ValueError:
 		raise LLMError("%s returned an invalid response" % service)
+
+
+def _logUsage(service, started, inputTokens, outputTokens, thinkingTokens=None, extra=""):
+	"""Logs how long a request took and how many tokens it used, to see where the time goes."""
+	message = "%s answered in %.1f s: %s input tokens, %s output tokens" % (
+		service, time.monotonic() - started, inputTokens, outputTokens
+	)
+	if thinkingTokens:
+		message += " (%s of them thinking)" % thinkingTokens
+	log.debug(message + extra)
 
 
 def _errorMessage(httpError):
@@ -93,10 +106,12 @@ def toStrictJsonSchema(schema):
 class GeminiProvider:
 	ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-	def __init__(self, apiKey, model, timeout=120):
+	def __init__(self, apiKey, model, timeout=120, thinkingLevel=None):
+		"""thinkingLevel: e.g. "low"; None for the model's default."""
 		self.apiKey = apiKey
 		self.model = model[len("models/"):] if model.startswith("models/") else model
 		self.timeout = timeout
+		self.thinkingLevel = thinkingLevel
 
 	def generateJson(self, system, user, schema):
 		body = {
@@ -108,8 +123,17 @@ class GeminiProvider:
 				"responseSchema": schema,
 			},
 		}
+		# Flash models think at medium level by default, which is much slower for this task.
+		if self.thinkingLevel:
+			body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": self.thinkingLevel}
+		started = time.monotonic()
 		data = _request(
 			"Gemini", self.ENDPOINT.format(model=self.model), body, {"x-goog-api-key": self.apiKey}, self.timeout
+		)
+		usage = data.get("usageMetadata") or {}
+		_logUsage(
+			"Gemini", started, usage.get("promptTokenCount"), usage.get("candidatesTokenCount"),
+			usage.get("thoughtsTokenCount"),
 		)
 		feedback = data.get("promptFeedback") or {}
 		if feedback.get("blockReason"):
@@ -155,7 +179,13 @@ class OpenAIProvider:
 		# Reasoning models default to medium effort, which is much slower for this task.
 		if self.reasoningEffort:
 			body["reasoning"] = {"effort": self.reasoningEffort}
+		started = time.monotonic()
 		data = _request(self.SERVICE, self.ENDPOINT, body, {"Authorization": "Bearer %s" % self.apiKey}, self.timeout)
+		usage = data.get("usage") or {}
+		_logUsage(
+			self.SERVICE, started, usage.get("input_tokens"), usage.get("output_tokens"),
+			(usage.get("output_tokens_details") or {}).get("reasoning_tokens"),
+		)
 		if data.get("status") == "incomplete":
 			reason = (data.get("incomplete_details") or {}).get("reason")
 			if reason == "max_output_tokens":
@@ -198,12 +228,20 @@ class OllamaProvider:
 		# Thinking models think by default, which is many times slower.
 		if self.think is not None:
 			body["think"] = self.think
+		started = time.monotonic()
 		try:
 			data = _request("Ollama", self.baseUrl + "/api/chat", body, timeout=self.timeout)
 		except LLMError as e:
 			if "does not support thinking" in str(e):
 				raise LLMError("%s. Turn thinking off in NVDA settings, Accessible Webpage category." % e)
 			raise
+		# Ollama reports durations in nanoseconds.
+		_logUsage(
+			"Ollama", started, data.get("prompt_eval_count"), data.get("eval_count"),
+			extra="; reading %.1f s, writing %.1f s" % (
+				(data.get("prompt_eval_duration") or 0) / 1e9, (data.get("eval_duration") or 0) / 1e9
+			),
+		)
 		if data.get("error"):
 			raise LLMError("Ollama: %s" % data["error"])
 		if data.get("done_reason") == "length":
@@ -250,7 +288,17 @@ class OpenAICompatibleProvider:
 			# Understood by llama-server and by chat templates of thinking models such as Qwen.
 			body["chat_template_kwargs"] = {"enable_thinking": self.think}
 		headers = {"Authorization": "Bearer %s" % self.apiKey} if self.apiKey else {}
+		started = time.monotonic()
 		data = _request(self.SERVICE, self.baseUrl + "/chat/completions", body, headers, self.timeout)
+		usage, timings = data.get("usage") or {}, data.get("timings")
+		_logUsage(
+			self.SERVICE, started, usage.get("prompt_tokens"), usage.get("completion_tokens"),
+			(usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
+			# llama-server reports how long reading the prompt and writing the answer took.
+			"; reading %.1f s, writing %.1f s" % (
+				(timings.get("prompt_ms") or 0) / 1000, (timings.get("predicted_ms") or 0) / 1000
+			) if timings else "",
+		)
 		choices = data.get("choices") or []
 		if not choices:
 			raise LLMError("%s returned no answer" % self.SERVICE)

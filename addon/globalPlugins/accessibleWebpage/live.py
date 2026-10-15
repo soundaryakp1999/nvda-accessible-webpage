@@ -228,14 +228,18 @@ class LiveSession:
 		before = self.snapshot.text
 		ti, registry, maxChars = self.snapshot.treeInterceptor, self.snapshot.registry, self.snapshot.maxChars
 		latest, previous = self.snapshot, None
-		deadline = time.monotonic() + timeout
+		started = time.monotonic()
+		deadline = started + timeout
+		snapshots = 0
 		while time.monotonic() < deadline:
 			time.sleep(SETTLE_INTERVAL)
 			latest = callOnMain(lambda: snapshot.take(ti, maxChars, registry))
+			snapshots += 1
 			added = addedLines(before, latest.text, ref)
 			if added and added == previous:
 				break
 			previous = added
+		log.debug("Page settled after %.1f s and %d snapshots" % (time.monotonic() - started, snapshots))
 		return latest, previous or []
 
 

@@ -53,6 +53,8 @@ Open NVDA settings, go to the "Accessible Webpage" category, and choose an AI pr
 1. Get an API key from Google AI Studio.
 2. Enter the key in the settings. You can also set the `GEMINI_API_KEY` environment variable instead.
 3. You can change the model there too (default `gemini-3.8-flash`).
+4. Thinking level defaults to Low. Flash models otherwise think at Medium, which is much slower.
+   Minimal is fastest but `gemini-3.8-flash` doesn't support it (older Flash and Flash-Lite models do).
 
 **OpenAI (cloud)**
 
@@ -103,6 +105,9 @@ Measured on a Snapdragon X Elite (Surface Laptop 7, 32 GB) with a 10,000-token s
 5. Local models are much slower than Gemini, so raise the request timeout if needed. It defaults to 300
    seconds, and larger models can need several minutes per page. Small models (around 3B) often write
    poor HTML, so a model of about 30B or more works noticeably better.
+
+To see where the time goes, set NVDA's log level to Debug. The log then shows how long each snapshot
+and model request took, and how many input, output and thinking tokens each request used.
 
 ## Build
 

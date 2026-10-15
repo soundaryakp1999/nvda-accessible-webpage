@@ -9,6 +9,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from collections import OrderedDict
 
 import addonHandler
@@ -216,11 +217,13 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 	def _show(self, snap, result, rest):
 		"""rest: snapshot lines of a long page that are loaded with the viewer's Load more button."""
+		started = time.monotonic()
 		content = sanitizer.sanitize(result.get("html", ""), snap.refs.keys(), snap.texts)
 		lines = snap.text.split("\n")
 		content += live.leftOutHtml(snap, lines[:len(lines) - len(rest)], content)
 		title = result.get("title") or snap.title or _("Accessible Webpage")
 		page = viewer.renderPage(title, result.get("summary", ""), result.get("language"), content, bool(rest))
+		log.debug("Sanitized and rendered the page in %.2f s" % (time.monotonic() - started))
 		self._saveForDebugging(page)
 		provider, _error = settings.makeProvider()
 		session = live.LiveSession(snap, provider, settings.effectivePartChars() or settings.effectiveMaxChars(), rest)

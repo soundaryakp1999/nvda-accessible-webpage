@@ -7,6 +7,7 @@ a live NVDAObject when we need to act on the original page.
 """
 
 import re
+import time
 
 import addonHandler
 import controlTypes
@@ -555,6 +556,7 @@ def take(treeInterceptor, maxChars, registry=None):
 	if not treeInterceptor.isReady:
 		# Translators: reported when the page is not ready yet.
 		raise SnapshotError(_("The page is still loading. Try again in a moment."))
+	started = time.monotonic()
 	root = _buildTree(treeInterceptor)
 	serializer = _Serializer(maxChars, registry or RefRegistry())
 	serializer.children(root)
@@ -574,4 +576,5 @@ def take(treeInterceptor, maxChars, registry=None):
 		hwnd = winUser.getAncestor(rootObj.windowHandle, getattr(winUser, "GA_ROOT", 2))
 	except Exception:
 		hwnd = None
+	log.debug("Snapshot took %.2f s: %d characters" % (time.monotonic() - started, len(text)))
 	return Snapshot(treeInterceptor, text, serializer.registry, title, url, hwnd, serializer.truncated, maxChars)

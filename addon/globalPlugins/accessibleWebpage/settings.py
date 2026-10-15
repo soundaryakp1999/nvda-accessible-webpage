@@ -35,6 +35,7 @@ confspec = {
 	"provider": "option('gemini', 'openai', 'ollama', 'server', default='gemini')",
 	"apiKey": "string(default='')",
 	"model": "string(default='%s')" % DEFAULT_MODEL,
+	"geminiThinking": "option('minimal', 'low', 'medium', 'high', 'default', default='low')",
 	"openaiModel": "string(default='%s')" % DEFAULT_OPENAI_MODEL,
 	"openaiReasoning": "option('none', 'low', 'medium', 'high', 'default', default='low')",
 	"ollamaUrl": "string(default='%s')" % DEFAULT_OLLAMA_URL,
@@ -81,6 +82,18 @@ REASONING_EFFORTS = (
 	# Translators: an OpenAI reasoning effort in the settings panel.
 	("high", _("High (much slower)")),
 	# Translators: an OpenAI reasoning effort in the settings panel.
+	("default", _("Model's default")),
+)
+GEMINI_THINKING_LEVELS = (
+	# Translators: a Gemini thinking level in the settings panel.
+	("minimal", _("Minimal (fastest; not supported by every model)")),
+	# Translators: a Gemini thinking level in the settings panel.
+	("low", _("Low (recommended)")),
+	# Translators: a Gemini thinking level in the settings panel.
+	("medium", _("Medium (slower)")),
+	# Translators: a Gemini thinking level in the settings panel.
+	("high", _("High (much slower)")),
+	# Translators: a Gemini thinking level in the settings panel.
 	("default", _("Model's default")),
 )
 # Value of the providers' think parameter for each mode; None leaves it unset.
@@ -149,7 +162,8 @@ def makeProvider():
 	if not apiKey:
 		# Translators: reported when no API key is configured.
 		return None, _("No Gemini API key. Set one in NVDA settings, Accessible Webpage category.")
-	return llm.GeminiProvider(apiKey, c["model"], c["timeout"]), None
+	level = c["geminiThinking"]
+	return llm.GeminiProvider(apiKey, c["model"], c["timeout"], None if level == "default" else level), None
 
 
 def providerId():
@@ -161,7 +175,7 @@ def providerId():
 		return "openai:%s:%s" % (c["openaiModel"], c["openaiReasoning"])
 	if c["provider"] == "server":
 		return "server:%s:%s:%s" % (c["serverUrl"], c["serverModel"], c["serverThinking"])
-	return "gemini:%s" % c["model"]
+	return "gemini:%s:%s" % (c["model"], c["geminiThinking"])
 
 
 def effectiveMaxChars():
@@ -216,6 +230,13 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		# Translators: label in the settings panel.
 		self.modelEdit = gemini.addLabeledControl(_("Gemini &model:"), wx.TextCtrl)
 		self.modelEdit.SetValue(c["model"])
+		self.geminiThinkingChoice = gemini.addLabeledControl(
+			# Translators: label in the settings panel.
+			_("Gemini thinking le&vel:"),
+			wx.Choice,
+			choices=[label for _key, label in GEMINI_THINKING_LEVELS],
+		)
+		self.geminiThinkingChoice.SetSelection(_choiceIndex(GEMINI_THINKING_LEVELS, c["geminiThinking"]))
 
 		# Translators: title of the OpenAI settings group.
 		openaiSizer = wx.StaticBoxSizer(wx.VERTICAL, self, label=_("OpenAI"))
@@ -411,6 +432,7 @@ class AccessibleWebpagePanel(settingsDialogs.SettingsPanel):
 		c["provider"] = self._selectedProvider()
 		c["apiKey"] = self.apiKeyEdit.GetValue().strip()
 		c["model"] = self.modelEdit.GetValue().strip() or DEFAULT_MODEL
+		c["geminiThinking"] = GEMINI_THINKING_LEVELS[self.geminiThinkingChoice.GetSelection()][0]
 		c["openaiModel"] = self.openaiModelEdit.GetValue().strip() or DEFAULT_OPENAI_MODEL
 		c["openaiReasoning"] = REASONING_EFFORTS[self.openaiReasoningChoice.GetSelection()][0]
 		c["ollamaUrl"] = self.ollamaUrlEdit.GetValue().strip() or DEFAULT_OLLAMA_URL
